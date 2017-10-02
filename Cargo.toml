@@ -1,0 +1,6 @@
+[package]
+name = "comerec-rc"
+version = "0.1.0"
+authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
+
+[dependencies]
