@@ -3,7 +3,6 @@
 /// on the heap, and we have pointers pointing at them. The nodes themselves
 /// contain the data, the reference count, and the `next` node in the queue.
 ///
-// use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
 use std::default::Default;
 
@@ -19,7 +18,6 @@ pub struct Queue<T> {
 
 #[derive(Debug)]
 pub struct Node<T> {
-    // count: AtomicUsize,
     // TODO: Use `std::mem::ManuallyDrop` instead,
     // as in `crossbeam-epoch`
     data: Option<T>,
@@ -29,7 +27,6 @@ pub struct Node<T> {
 impl<T> Node<T> {
     pub fn empty() -> Self {
         Self {
-            // count: AtomicUsize::new(0),
             data: None,
             next: Default::default(),
         }
@@ -39,7 +36,6 @@ impl<T> Node<T> {
 impl<T> Queue<T> {
     pub fn new() -> Self {
         let sentinel = Owned::new(Node {
-            // count: AtomicUsize::new(0),
             data: None,
             next: Default::default(),
         });
@@ -55,7 +51,6 @@ impl<T> Queue<T> {
 
     pub fn push(&self, t: T) {
         let node = Owned::new(Node {
-            // count: AtomicUsize::new(0),
             data: Some(t),
             next: Default::default(),
         });
@@ -90,6 +85,14 @@ impl<T> Queue<T> {
         let next = h.next.load(Acquire);
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
+                // NOTE(martin): We don't really return the correct node here:
+                // we CAS the old sentinel node out, and make the first data
+                // node the new sentinel node, but return the data of `node`,
+                // instead of `head`. In other words, the data we return
+                // belongs on the node that is the new sentinel node.
+                //
+                // This is where we leak memory: when we CAS out `head`,
+                // it is no longer reachable by the queue.
                 self.head
                     .compare_and_set(head, next, Release)
                     .ok()
@@ -99,6 +102,10 @@ impl<T> Queue<T> {
         }
     }
 
+    /// Count the number of elements in the queue.
+    /// This is typically not a operation we need,
+    /// but it is practical to have for testing
+    /// purposes.
     pub fn len(&self) -> usize {
         let mut len = 0;
         let mut node = unsafe { self.head.load(Acquire).deref() };
@@ -107,6 +114,13 @@ impl<T> Queue<T> {
             len += 1;
         }
         len
+    }
+
+    /// Returns `true` if the queue is empty.
+    pub fn is_empty(&self) -> bool {
+        let head = self.head.load(Acquire);
+        let h = unsafe { head.deref() };
+        h.next.load(Acquire).is_null()
     }
 }
 
