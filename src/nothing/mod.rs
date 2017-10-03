@@ -193,13 +193,13 @@ mod test {
         }
     }
 
-    #[test]
-    fn memory_usage() {
-        let mut q: Queue<LargeStruct> = Queue::new();
-        // This will leak
-        for i in 0..(1024 * 1024) {
-            q.push(LargeStruct::new());
-            q.pop();
-        }
-    }
+    // #[test]
+    // fn memory_usage() {
+    //     let mut q: Queue<LargeStruct> = Queue::new();
+    //     // This will leak
+    //     for i in 0..(1024 * 1024) {
+    //         q.push(LargeStruct::new());
+    //         q.pop();
+    //     }
+    // }
 }
