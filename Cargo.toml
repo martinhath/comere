@@ -1,5 +1,5 @@
 [package]
-name = "comerec-rc"
+name = "comerec"
 version = "0.1.0"
 authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
 
