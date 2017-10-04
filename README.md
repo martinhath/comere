@@ -1,4 +1,4 @@
-# comerec
+# comere
 Concurrent Memory Reclamation using Reference Counting
 
 This repository contains different memory reclamation schemes for

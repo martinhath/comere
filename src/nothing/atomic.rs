@@ -118,7 +118,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Atomic;
+    /// use comere::Atomic;
     ///
     /// let a = Atomic::<i32>::null();
     /// ```
@@ -135,7 +135,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Atomic;
+    /// use comere::Atomic;
     ///
     /// let a = Atomic::<i32>::null();
     /// ```
@@ -152,7 +152,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Atomic;
+    /// use comere::Atomic;
     ///
     /// let a = Atomic::new(1234);
     /// ```
@@ -165,7 +165,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{Atomic, Owned};
+    /// use comere::{Atomic, Owned};
     ///
     /// let a = Atomic::from_owned(Owned::new(1234));
     /// ```
@@ -180,7 +180,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{Atomic, Ptr};
+    /// use comere::{Atomic, Ptr};
     ///
     /// let a = Atomic::from_ptr(Ptr::<i32>::null());
     /// ```
@@ -198,7 +198,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic};
+    /// use comere::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -220,7 +220,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -240,7 +240,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::null();
@@ -262,7 +262,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned, Ptr};
+    /// use comere::{self as epoch, Atomic, Owned, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -287,7 +287,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -333,7 +333,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -382,7 +382,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -433,7 +433,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -492,7 +492,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from_ptr(Ptr::null().with_tag(3));
@@ -518,7 +518,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from_ptr(Ptr::null().with_tag(1));
@@ -544,7 +544,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Ptr};
+    /// use comere::{self as epoch, Atomic, Ptr};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from_ptr(Ptr::null().with_tag(1));
@@ -614,7 +614,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Owned;
+    /// use comere::Owned;
     ///
     /// let o = Owned::new(1234);
     /// ```
@@ -631,7 +631,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Owned;
+    /// use comere::Owned;
     ///
     /// let o = unsafe { Owned::from_raw(Box::into_raw(Box::new(1234))) };
     /// ```
@@ -652,7 +652,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Owned;
+    /// use comere::Owned;
     ///
     /// let o = unsafe { Owned::from_raw(Box::into_raw(Box::new(1234))) };
     /// ```
@@ -666,7 +666,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Owned};
+    /// use comere::{self as epoch, Owned};
     ///
     /// let o = Owned::new(1234);
     /// epoch::pin(|scope| {
@@ -686,7 +686,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Owned;
+    /// use comere::Owned;
     ///
     /// assert_eq!(Owned::new(1234).tag(), 0);
     /// ```
@@ -700,7 +700,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Owned;
+    /// use comere::Owned;
     ///
     /// let o = Owned::new(0u64);
     /// assert_eq!(o.tag(), 0);
@@ -812,7 +812,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Ptr;
+    /// use comere::Ptr;
     ///
     /// let p = Ptr::<i32>::null();
     /// assert!(p.is_null());
@@ -833,7 +833,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::Ptr;
+    /// use comere::Ptr;
     ///
     /// let p = unsafe { Ptr::from_raw(Box::into_raw(Box::new(1234))) };
     /// assert!(!p.is_null());
@@ -851,7 +851,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::null();
@@ -870,7 +870,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let o = Owned::new(1234);
@@ -907,7 +907,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic};
+    /// use comere::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -943,7 +943,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic};
+    /// use comere::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -968,7 +968,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic};
+    /// use comere::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -988,7 +988,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic, Owned};
+    /// use comere::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::from_owned(Owned::new(0u64).with_tag(5));
@@ -1007,7 +1007,7 @@ impl<'scope, T> Ptr<'scope, T> {
     /// # Examples
     ///
     /// ```
-    /// use comerec::{self as epoch, Atomic};
+    /// use comere::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(0u64);
