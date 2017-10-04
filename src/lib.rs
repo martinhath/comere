@@ -28,19 +28,18 @@ mod test {
 
     const N_THREADS: usize = 4;
 
-    // TODO(martin): rewrite this, so we can write `queue_test!(nothing)`
-    macro_rules! queue_test {($Q:ty) => {
-        #[test]
-        fn correct_queue() {
-            println!("type: {}", stringify!($Q));
-            let q: $Q = Queue::new();
-            q.push(123);
-            assert!(!q.is_empty());
-            assert_eq!(q.pop(), Some(123));
-            assert!(q.is_empty());
-            assert!(false);
-        }
+    macro_rules! correctness {($Q:ident) => {
+        $Q.push(123);
+        assert!(!$Q.is_empty());
+        assert_eq!($Q.pop(), Some(123));
+        assert!($Q.is_empty());
     }}
 
-    queue_test!(nothing::Queue<u32>);
+    #[test]
+    fn correct_queue_nothing() {
+        let q: nothing::Queue<u32> = Queue::new();
+        correctness!(q);
+    }
+
+
 }
