@@ -7,18 +7,18 @@ pub trait Queue<T> {
     fn is_empty(&self) -> bool;
 }
 
-impl<T> Queue<T> for nothing::Queue<T> {
+impl<T> Queue<T> for nothing::queue::Queue<T> {
     fn new() -> Self {
-        nothing::Queue::new()
+        nothing::queue::Queue::new()
     }
     fn push(&self, val: T) {
-        nothing::Queue::push(self, val);
+        nothing::queue::Queue::push(self, val);
     }
     fn pop(&self) -> Option<T> {
-        nothing::Queue::pop(self)
+        nothing::queue::Queue::pop(self)
     }
     fn is_empty(&self) -> bool {
-        nothing::Queue::is_empty(self)
+        nothing::queue::Queue::is_empty(self)
     }
 }
 
@@ -37,9 +37,7 @@ mod test {
 
     #[test]
     fn correct_queue_nothing() {
-        let q: nothing::Queue<u32> = Queue::new();
+        let q: nothing::queue::Queue<u32> = Queue::new();
         correctness!(q);
     }
-
-
 }
