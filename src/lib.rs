@@ -1,3 +1,4 @@
+#[allow(unused_variables)]
 pub mod nothing;
 
 pub trait Queue<T> {
@@ -49,7 +50,7 @@ impl<T> List<T> for nothing::list::List<T> {
 mod test {
     use super::*;
 
-    const N_THREADS: usize = 4;
+    const N_THREADS: usize = 16;
 
     macro_rules! correctness_queue {($Q:ident) => {
         $Q.push(123);
@@ -64,6 +65,82 @@ mod test {
             assert_eq!($Q.pop(), Some(i));
         }
         assert!($Q.is_empty());
+
+        use std::sync::atomic;
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::thread::spawn;
+        use std::sync::{Arc, Mutex, Barrier};
+
+        let iter_count = 1_000_000;
+        let sync_interval = 10000;
+
+        let thread_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(N_THREADS));
+        let q = Arc::new($Q);
+        let removals = Arc::new(Mutex::new([0; N_THREADS]));
+        {
+            let mut threads = vec![];
+            for _ in 0..N_THREADS {
+                let thread_count = thread_count.clone();
+                let q = q.clone();
+                let removals = removals.clone();
+                let barrier = barrier.clone();
+                threads.push(spawn(move || {
+                    // All threads find their id.
+                    // Some threads `push`es, and the other `pop`s.
+                    // The poppers register what they find.
+                    let mut local_removals = [0; N_THREADS];
+                    let thread_id = thread_count.fetch_add(1, SeqCst) as u32;
+                    let push_thread = thread_id % 2 == 0;
+
+                    barrier.wait();
+                    for i in 0..iter_count {
+                        if push_thread {
+                            q.push(thread_id);
+                        } else {
+                            if let Some(res) = q.pop() {
+                                local_removals[res as usize] += 1;
+                            }
+                        }
+                        // Every now and then, sync up the threads.
+                        // This seems to cause errors more often
+                        if i % sync_interval == 0 {
+                            barrier.wait();
+                        }
+                    }
+                    // Wait for everyone to finish
+                    barrier.wait();
+                    // Remove remaining elements, if any.
+                    // Each thread updates the global removals count
+                    if !push_thread {
+                        if thread_id == 1 {
+                            while let Some(res) = q.pop() {
+                                local_removals[res as usize] += 1;
+                            }
+                        }
+                        let mut removals = removals.lock().unwrap();
+                        for i in 0..N_THREADS {
+                            removals[i] += local_removals[i];
+                        }
+                    }
+                }));
+            }
+
+            // Finish all threads
+            for t in threads {
+                t.join().unwrap();
+            }
+
+            assert!(q.is_empty());
+            println!("{:?}", *removals.lock().unwrap());
+            // Confirm the counts
+            for (i, &n) in removals.lock().unwrap().iter().enumerate() {
+                let push_thread = i % 2 == 0;
+                if push_thread {
+                    assert_eq!(n, iter_count);
+                }
+            }
+        }
     }}
 
     #[test]
@@ -86,7 +163,6 @@ mod test {
         for i in (0..200).rev() {
             assert_eq!($L.remove_front(), Some(i));
         }
-
     }}
 
     #[test]

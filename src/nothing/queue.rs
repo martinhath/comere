@@ -1,6 +1,8 @@
+#[allow(unused_variables)]
+#[allow(dead_code)]
 /// A Michael-Scott Queue.
 
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
+use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
 use std::default::Default;
 
 use super::atomic::{Owned, Atomic, Ptr};
@@ -77,9 +79,9 @@ impl<T> Queue<T> {
     }
 
     pub fn pop(&self) -> Option<T> {
-        let head = self.head.load(Acquire);
-        let h = unsafe { head.deref() };
-        let next = h.next.load(Acquire);
+        let head: Ptr<Node<T>> = self.head.load(Acquire);
+        let h: &Node<T> = unsafe { head.deref() };
+        let next: Ptr<Node<T>> = h.next.load(Acquire);
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
                 // NOTE(martin): We don't really return the correct node here:
@@ -144,7 +146,7 @@ mod test {
 
     #[test]
     fn st_queue_push() {
-        let mut q: Queue<Payload> = Queue::new();
+        let q: Queue<Payload> = Queue::new();
         q.push(Payload::new());
         q.push(Payload::new());
         q.push(Payload::new());
@@ -152,7 +154,7 @@ mod test {
 
     #[test]
     fn st_queue_push_pop() {
-        let mut q: Queue<u32> = Queue::new();
+        let q: Queue<u32> = Queue::new();
         q.push(1);
         let r = q.pop();
         assert_eq!(r, Some(1));
@@ -161,7 +163,7 @@ mod test {
 
     #[test]
     fn st_queue_push_pop_many() {
-        let mut q: Queue<u32> = Queue::new();
+        let q: Queue<u32> = Queue::new();
         for i in 0..100 {
             q.push(i);
         }
@@ -173,7 +175,7 @@ mod test {
 
     #[test]
     fn st_queue_len() {
-        let mut q: Queue<Payload> = Queue::new();
+        let q: Queue<Payload> = Queue::new();
         for i in 0..10 {
             q.push(Payload::new());
         }

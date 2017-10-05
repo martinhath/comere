@@ -1,3 +1,5 @@
+#[allow(unused_variables)]
+#[allow(dead_code)]
 // NOTE:
 // This code was initially yanked from
 //   http://www.github.com/jeehoonkang/crossbeam-epoch
