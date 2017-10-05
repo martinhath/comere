@@ -50,6 +50,12 @@ impl<T> List<T> for nothing::list::List<T> {
 mod test {
     use super::*;
 
+    use std::sync::atomic;
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::thread::spawn;
+    use std::sync::{Arc, Mutex, Barrier};
+
+
     const N_THREADS: usize = 16;
 
     macro_rules! correctness_queue {($Q:ident) => {
@@ -65,11 +71,6 @@ mod test {
             assert_eq!($Q.pop(), Some(i));
         }
         assert!($Q.is_empty());
-
-        use std::sync::atomic;
-        use std::sync::atomic::Ordering::SeqCst;
-        use std::thread::spawn;
-        use std::sync::{Arc, Mutex, Barrier};
 
         let iter_count = 1_000_000;
         let sync_interval = 10000;
@@ -162,6 +163,54 @@ mod test {
         assert!(!$L.is_empty());
         for i in (0..200).rev() {
             assert_eq!($L.remove_front(), Some(i));
+        }
+        assert!($L.is_empty());
+
+        let iter_count = 10_000;
+
+        let thread_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(N_THREADS));
+        let l = Arc::new($L);
+        let removals = Arc::new(Mutex::new([0; N_THREADS]));
+        {
+            // Have odd threads insert their thread_id, and even
+            // threads remove them.
+            // Queue should be empty at the end, and all removals
+            // should succeed.
+            let mut threads = vec![];
+            for _ in 0..N_THREADS {
+                let thread_count = thread_count.clone();
+                let l = l.clone();
+                let barrier = barrier.clone();
+                threads.push(spawn(move || {
+                    // All threads find their id.
+                    // Some threads `push`es, and the other `pop`s.
+                    // The poppers register what they find.
+                    let thread_id = thread_count.fetch_add(1, SeqCst) as u32;
+                    let even = thread_id % 2 == 0;
+
+                    for i in 0..iter_count {
+                        barrier.wait();
+                        if !even {
+                            l.insert(thread_id);
+                        }
+                        barrier.wait();
+                        if even {
+                            let remove_id = thread_id + 1;
+                            assert!(l.contains(&remove_id));
+                            assert!(l.remove(&remove_id));
+                        }
+                        barrier.wait();
+                        // assert!(l.is_empty());
+                    }
+                }));
+            }
+
+            // Finish all threads
+            for t in threads {
+                assert!(t.join().is_ok());
+            }
+            assert!(l.is_empty());
         }
     }}
 
