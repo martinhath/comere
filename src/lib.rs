@@ -23,14 +23,17 @@ impl<T> Queue<T> for nothing::queue::Queue<T> {
     }
 }
 
-pub trait List<T> {
+// TODO: remove this
+type T = u32;
+
+pub trait List {
     fn new() -> Self;
     fn insert(&self, T);
     // fn remove(&self) -> Option<T>;
-    fn is_empty(&self) -> bool;
+    // fn is_empty(&self) -> bool;
 }
 
-impl<T> List<T> for nothing::list::List<T> {
+impl List for nothing::list::List {
     fn new() -> Self {
         nothing::list::List::new()
     }
@@ -40,9 +43,9 @@ impl<T> List<T> for nothing::list::List<T> {
     // fn remove(&self) -> Option<T> {
     //     nothing::list::List::remove(self)
     // }
-    fn is_empty(&self) -> bool {
-        nothing::list::List::is_empty(self)
-    }
+    // fn is_empty(&self) -> bool {
+    //     nothing::list::List::is_empty(self)
+    // }
 }
 
 
@@ -171,7 +174,6 @@ mod test {
         let thread_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let barrier = Arc::new(Barrier::new(N_THREADS));
         let l = Arc::new($L);
-        let removals = Arc::new(Mutex::new([0; N_THREADS]));
         {
             // Have odd threads insert their thread_id, and even
             // threads remove them.
@@ -189,7 +191,7 @@ mod test {
                     let thread_id = thread_count.fetch_add(1, SeqCst) as u32;
                     let even = thread_id % 2 == 0;
 
-                    for i in 0..iter_count {
+                    for _ in 0..iter_count {
                         barrier.wait();
                         if !even {
                             l.insert(thread_id);
@@ -201,7 +203,9 @@ mod test {
                             assert!(l.remove(&remove_id));
                         }
                         barrier.wait();
-                        // assert!(l.is_empty());
+                        if thread_id == 1 {
+                            assert!(l.is_empty());
+                        }
                     }
                 }));
             }
@@ -210,13 +214,13 @@ mod test {
             for t in threads {
                 assert!(t.join().is_ok());
             }
-            assert!(l.is_empty());
+            // assert!(l.is_empty());
         }
     }}
 
     #[test]
     fn correct_list_nothing() {
-        let l: nothing::list::List<u32> = List::new();
+        let l: nothing::list::List = List::new();
         correctness_list!(l);
     }
 
