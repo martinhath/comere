@@ -1,5 +1,6 @@
 #[allow(unused_variables)]
 pub mod nothing;
+pub mod ebr;
 
 pub trait Queue<T> {
     fn new() -> Self;
