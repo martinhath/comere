@@ -48,26 +48,6 @@ impl List {
         }
     }
 
-    /// Removes and returns the first element of the list, if any.
-    pub fn remove_front(&self) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed);
-        loop {
-            if head_ptr.is_null() {
-                return None;
-            }
-            let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed);
-            match self.head.compare_and_set(head_ptr, next, Release) {
-                Ok(()) => {
-                    return Some(unsafe {::std::ptr::read(&head.data)})
-                }
-                Err(new_head) => {
-                    head_ptr = new_head;
-                }
-            }
-        }
-    }
-
     pub fn is_empty(&self) -> bool {
         let head = self.head.load(Relaxed);
         let ret = head.is_null();
@@ -98,6 +78,10 @@ impl List {
     }
 
     /// Remove the first node in the list where `node.data == key`
+    ///
+    /// Note that this method causes the list to not be lock-free, since
+    /// threads wanting to insert a node after this or remove the next node
+    /// will be stuck forever if a thread tags the current node and then dies.
     pub fn remove(&self, value: &T) -> bool {
         let mut previous_node_ptr = &self.head;
         let mut current_ptr = self.head.load(SeqCst);
@@ -150,6 +134,26 @@ impl List {
                     return false;
                 }
                 current = unsafe { current_ptr.deref() };
+            }
+        }
+    }
+
+    /// Removes and returns the first element of the list, if any.
+    pub fn remove_front(&self) -> Option<T> {
+        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed);
+        loop {
+            if head_ptr.is_null() {
+                return None;
+            }
+            let head: &Node<T> = unsafe { head_ptr.deref() };
+            let next = head.next.load(Relaxed);
+            match self.head.compare_and_set(head_ptr, next, Release) {
+                Ok(()) => {
+                    return Some(unsafe {::std::ptr::read(&head.data)})
+                }
+                Err(new_head) => {
+                    head_ptr = new_head;
+                }
             }
         }
     }
