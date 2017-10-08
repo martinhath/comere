@@ -2,7 +2,10 @@
 extern crate lazy_static;
 
 #[allow(unused_variables)]
+#[allow(dead_code)]
 pub mod nothing;
+#[allow(unused_variables)]
+#[allow(dead_code)]
 pub mod ebr;
 
 pub trait Queue<T> {
@@ -57,7 +60,6 @@ impl List for nothing::list::List {
 mod test {
     use super::*;
 
-    use std::sync::atomic;
     use std::sync::atomic::Ordering::SeqCst;
     use std::thread::spawn;
     use std::sync::{Arc, Mutex, Barrier};
