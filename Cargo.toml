@@ -5,3 +5,4 @@ authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
 
 [dependencies]
 crossbeam-utils = { path = '../crossbeam-utils'}
+lazy_static = "*"

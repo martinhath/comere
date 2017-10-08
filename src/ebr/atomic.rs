@@ -1033,17 +1033,17 @@ impl<'scope, T> Default for Ptr<'scope, T> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Ptr;
-
-    #[test]
-    fn valid_tag_i8() {
-        Ptr::<i8>::null().with_tag(0);
-    }
-
-    #[test]
-    fn valid_tag_i64() {
-        Ptr::<i64>::null().with_tag(7);
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::Ptr;
+//
+//     #[test]
+//     fn valid_tag_i8() {
+//         Ptr::<i8>::null().with_tag(0);
+//     }
+//
+//     #[test]
+//     fn valid_tag_i64() {
+//         Ptr::<i64>::null().with_tag(7);
+//     }
+// }
