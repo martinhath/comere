@@ -83,57 +83,61 @@ impl List {
     /// threads wanting to insert a node after this or remove the next node
     /// will be stuck forever if a thread tags the current node and then dies.
     pub fn remove(&self, value: &T) -> bool {
-        let mut previous_node_ptr = &self.head;
-        let mut current_ptr = self.head.load(SeqCst);
-        if current_ptr.is_null() {
-            return false;
-        }
-        let mut current: &Node<T> = unsafe { current_ptr.deref() };
+        // Rust does not have tail-call optimization guarantees,
+        // so we have to use a loop here, in order not to blow the stack.
+        'outer: loop {
+            let mut previous_node_ptr = &self.head;
+            let mut current_ptr = self.head.load(SeqCst);
+            if current_ptr.is_null() {
+                return false;
+            }
+            let mut current: &Node<T> = unsafe { current_ptr.deref() };
 
-        loop {
-            let next_ptr = current.next.load(SeqCst).with_tag(0);
-            if current.data == *value {
-                // Now we want to remove the current node from the list.
-                // We first need to mark this node as 'to-be-deleted',
-                // by tagging its next pointer. When doing this, we avoid
-                // that other threads are inserting something after the
-                // current node, and us swinging the `next` pointer of
-                // `previous` to the old `next` of the current node.
-                let next_ptr = current.next.load(SeqCst);
-                if current
-                    .next
-                    .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst)
-                    .is_err()
-                {
-                    // Failed to mark the current node. Restart.
-                    return self.remove(value);
-                };
-                let res = previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
-                match res {
-                    Ok(_) => return true,
-                    Err(_) => {
-                        let pnp = previous_node_ptr.load(SeqCst);
-                        // Some new node in inserted behind us.
-                        // Unmark and restart.
-                        let res = current.next.compare_and_set(
-                            next_ptr.with_tag(1),
-                            next_ptr,
-                            SeqCst,
-                        );
-                        if res.is_err() {
-                            panic!("coulnd't untag ptr. WTF?");
+            loop {
+                let next_ptr = current.next.load(SeqCst).with_tag(0);
+                if current.data == *value {
+                    // Now we want to remove the current node from the list.
+                    // We first need to mark this node as 'to-be-deleted',
+                    // by tagging its next pointer. When doing this, we avoid
+                    // that other threads are inserting something after the
+                    // current node, and us swinging the `next` pointer of
+                    // `previous` to the old `next` of the current node.
+                    let next_ptr = current.next.load(SeqCst);
+                    if current
+                        .next
+                        .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst)
+                        .is_err()
+                    {
+                        // Failed to mark the current node. Restart.
+                        continue 'outer;
+                    };
+                    let res = previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
+                    match res {
+                        Ok(_) => return true,
+                        Err(_) => {
+                            let pnp = previous_node_ptr.load(SeqCst);
+                            // Some new node in inserted behind us.
+                            // Unmark and restart.
+                            let res = current.next.compare_and_set(
+                                next_ptr.with_tag(1),
+                                next_ptr,
+                                SeqCst,
+                            );
+                            if res.is_err() {
+                                panic!("coulnd't untag ptr. WTF?");
+                            }
+                            continue 'outer;
                         }
-                        return self.remove(value);
                     }
+                } else {
+                    previous_node_ptr = &current.next;
+                    current_ptr = next_ptr;
+                    if current_ptr.is_null() {
+                        // we've reached the end of the list, without finding our value.
+                        return false;
+                    }
+                    current = unsafe { current_ptr.deref() };
                 }
-            } else {
-                previous_node_ptr = &current.next;
-                current_ptr = next_ptr;
-                if current_ptr.is_null() {
-                    // we've reached the end of the list, without finding our value.
-                    return false;
-                }
-                current = unsafe { current_ptr.deref() };
             }
         }
     }
