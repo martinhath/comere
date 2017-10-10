@@ -1,15 +1,11 @@
-#[allow(unused_variables)]
-#[allow(dead_code)]
-// NOTE:
-// This code was initially yanked from
-//   http://www.github.com/jeehoonkang/crossbeam-epoch
-// from the branch `handle`, 02.10.17.
 use std::borrow::{Borrow, BorrowMut};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+
+use super::Pin;
 
 /// Given ordering for the success case in a compare-exchange operation, returns the strongest
 /// appropriate ordering for the failure case.
@@ -94,9 +90,9 @@ fn data_with_tag<T>(data: usize, tag: usize) -> usize {
 /// least significant bits of the address.  More precisely, a tag should be less than `(1 <<
 /// mem::align_of::<T>().trailing_zeros())`.
 ///
-/// Any method that loads the pointer must be passed a [`Scope`].
+/// Any method that loads the pointer must be passed a [`Pin`].
 ///
-/// [`Scope`]: struct.Scope.html
+/// [`Pin`]: struct.Pin.html
 #[derive(Debug)]
 pub struct Atomic<T> {
     data: AtomicUsize,
@@ -208,7 +204,7 @@ impl<T> Atomic<T> {
     ///     let p = a.load(SeqCst, scope);
     /// });
     /// ```
-    pub fn load<'scope>(&self, ord: Ordering) -> Ptr<'scope, T> {
+    pub fn load<'scope>(&self, ord: Ordering, _: Pin<'scope>) -> Ptr<'scope, T> {
         Ptr::from_data(self.data.load(ord))
     }
 
@@ -272,7 +268,7 @@ impl<T> Atomic<T> {
     ///     let p = a.swap(Ptr::null(), SeqCst, scope);
     /// });
     /// ```
-    pub fn swap<'scope>(&self, new: Ptr<T>, ord: Ordering) -> Ptr<'scope, T> {
+    pub fn swap<'scope>(&self, new: Ptr<T>, ord: Ordering, _: Pin<'scope>) -> Ptr<'scope, T> {
         Ptr::from_data(self.data.swap(new.data, ord))
     }
 
@@ -304,6 +300,7 @@ impl<T> Atomic<T> {
         current: Ptr<T>,
         new: Ptr<T>,
         ord: O,
+        _: Pin<'scope>,
     ) -> Result<(), Ptr<'scope, T>>
     where
         O: CompareAndSetOrdering,
@@ -355,6 +352,7 @@ impl<T> Atomic<T> {
         current: Ptr<T>,
         new: Ptr<T>,
         ord: O,
+        _: Pin<'scope>,
     ) -> Result<(), Ptr<'scope, T>>
     where
         O: CompareAndSetOrdering,
@@ -399,6 +397,7 @@ impl<T> Atomic<T> {
         current: Ptr<T>,
         new: Owned<T>,
         ord: O,
+        _: Pin<'scope>,
     ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)>
     where
         O: CompareAndSetOrdering,
@@ -462,6 +461,7 @@ impl<T> Atomic<T> {
         current: Ptr<T>,
         new: Owned<T>,
         ord: O,
+        _: Pin<'scope>,
     ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)>
     where
         O: CompareAndSetOrdering,
@@ -503,7 +503,7 @@ impl<T> Atomic<T> {
     ///     assert_eq!(a.load(SeqCst, scope).tag(), 2);
     /// });
     /// ```
-    pub fn fetch_and<'scope>(&self, val: usize, ord: Ordering) -> Ptr<'scope, T> {
+    pub fn fetch_and<'scope>(&self, val: usize, ord: Ordering, _: Pin<'scope>) -> Ptr<'scope, T> {
         Ptr::from_data(self.data.fetch_and(val | !low_bits::<T>(), ord))
     }
 
@@ -529,7 +529,7 @@ impl<T> Atomic<T> {
     ///     assert_eq!(a.load(SeqCst, scope).tag(), 3);
     /// });
     /// ```
-    pub fn fetch_or<'scope>(&self, val: usize, ord: Ordering) -> Ptr<'scope, T> {
+    pub fn fetch_or<'scope>(&self, val: usize, ord: Ordering, _: Pin<'scope>) -> Ptr<'scope, T> {
         Ptr::from_data(self.data.fetch_or(val & low_bits::<T>(), ord))
     }
 
@@ -555,7 +555,7 @@ impl<T> Atomic<T> {
     ///     assert_eq!(a.load(SeqCst, scope).tag(), 2);
     /// });
     /// ```
-    pub fn fetch_xor<'scope>(&self, val: usize, ord: Ordering) -> Ptr<'scope, T> {
+    pub fn fetch_xor<'scope>(&self, val: usize, ord: Ordering, _: Pin<'scope>) -> Ptr<'scope, T> {
         Ptr::from_data(self.data.fetch_xor(val & low_bits::<T>(), ord))
     }
 }
@@ -677,7 +677,7 @@ impl<T> Owned<T> {
     /// ```
     ///
     /// [`Ptr`]: struct.Ptr.html
-    pub fn into_ptr<'scope>(self) -> Ptr<'scope, T> {
+    pub fn into_ptr<'scope>(self, _: Pin<'scope>) -> Ptr<'scope, T> {
         let data = self.data;
         mem::forget(self);
         Ptr::from_data(data)
@@ -1033,17 +1033,17 @@ impl<'scope, T> Default for Ptr<'scope, T> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::Ptr;
-//
-//     #[test]
-//     fn valid_tag_i8() {
-//         Ptr::<i8>::null().with_tag(0);
-//     }
-//
-//     #[test]
-//     fn valid_tag_i64() {
-//         Ptr::<i64>::null().with_tag(7);
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::Ptr;
+
+    #[test]
+    fn valid_tag_i8() {
+        Ptr::<i8>::null().with_tag(0);
+    }
+
+    #[test]
+    fn valid_tag_i64() {
+        Ptr::<i64>::null().with_tag(7);
+    }
+}
