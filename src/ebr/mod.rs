@@ -40,7 +40,7 @@ pub mod queue;
 pub mod list;
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::cell::RefCell;
 
 use self::atomic::Ptr;
@@ -107,6 +107,7 @@ impl ThreadPinMarker {
 struct GlobalState {
     epoch: AtomicUsize,
     pins: list::List<ThreadPinMarker>,
+    garbage: [list::List<AtomicPtr<()>>; 3],
 }
 
 impl GlobalState {
@@ -121,6 +122,15 @@ impl GlobalState {
                 _pin,
             )
         })
+    }
+
+    fn add_garbage<'scope, T>(&self, ptr: *mut T, epoch: usize, _pin: Pin<'scope>) {
+        let global_epoch = self.epoch.load(Ordering::SeqCst);
+        // garbage[0] = e
+        // garbage[1] = e - 1
+        // garbage[2] = e - 2
+        let bucket = global_epoch - epoch;
+        self.garbage[bucket].insert(AtomicPtr::new(ptr as *mut ()), _pin);
     }
 }
 
@@ -141,6 +151,11 @@ lazy_static! {
         GlobalState {
             epoch: AtomicUsize::new(0),
             pins: list::List::new(),
+            garbage: [
+                list::List::new(),
+                list::List::new(),
+                list::List::new()
+            ],
         }
     };
 }
@@ -166,6 +181,12 @@ thread_local! {
 #[derive(Clone, Copy)]
 pub struct Pin<'scope> {
     _marker: PhantomData<&'scope ()>,
+}
+
+impl<'scope> Pin<'scope> {
+    pub(crate) fn fake() -> Self {
+        Pin { _marker: PhantomData }
+    }
 }
 
 pub fn pin<'scope, F, R>(f: F) -> R
@@ -197,7 +218,6 @@ where
         };
         if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch() {
             let a = GLOBAL.epoch.fetch_add(1, Ordering::SeqCst);
-            println!("incrementing epoch to {}", a + 1);
         }
     });
 
