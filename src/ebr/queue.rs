@@ -34,7 +34,10 @@ impl<T> Node<T> {
     }
 }
 
-impl<T> Queue<T> {
+impl<T> Queue<T>
+where
+    T: 'static,
+{
     pub fn new() -> Self {
         let sentinel = Owned::new(Node {
             data: None,
@@ -118,10 +121,43 @@ impl<T> Queue<T> {
                 // it is no longer reachable by the queue.
                 let res = self.head.compare_and_set(head, next, Release, _pin);
                 match res {
-                    Ok(n) => ::std::ptr::read(&node.data),
+                    Ok(n) => {
+                        _pin.add_garbage(unsafe { head.into_owned() });
+                        ::std::ptr::read(&node.data)
+                    }
                     Err(e) => None,
                 }
             },
+            None => None,
+        }
+    }
+
+    pub fn pop_if<'scope, F>(&self, f: F, _pin: Pin<'scope>) -> Option<T>
+    where
+        F: Fn(&T) -> bool,
+    {
+        let head: Ptr<Node<T>> = self.head.load(Acquire, _pin);
+        let h: &Node<T> = unsafe { head.deref() };
+        let next: Ptr<Node<T>> = h.next.load(Acquire, _pin);
+        match unsafe { next.as_ref() } {
+            Some(node) => {
+                let d: &T = node.data.as_ref().unwrap();
+                if f(d) {
+                    unsafe {
+                        let res = self.head.compare_and_set(head, next, Release, _pin);
+                        match res {
+                            Ok(n) => {
+                                _pin.add_garbage(unsafe { head.into_owned() });
+                                ::std::ptr::read(&node.data)
+                            }
+                            Err(e) => None,
+                        }
+
+                    }
+                } else {
+                    None
+                }
+            }
             None => None,
         }
     }
@@ -226,13 +262,15 @@ mod test {
     }
 
     // This test confirms that the queue leaks memory.
-    // #[test]
-    // fn memory_usage() {
-    //     let mut q: Queue<LargeStruct> = Queue::new();
-    //     // This will leak
-    //     for i in 0..(1024 * 1024) {
-    //         q.push(LargeStruct::new());
-    //         q.pop();
-    //     }
-    // }
+    #[test]
+    fn memory_usage() {
+        let mut q: Queue<LargeStruct> = Queue::new();
+        // This will leak
+        for i in 0..(1024 * 1024) {
+            pin(|pin| {
+                q.push(LargeStruct::new(), pin);
+                q.pop(pin);
+            })
+        }
+    }
 }

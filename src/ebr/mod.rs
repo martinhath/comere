@@ -42,8 +42,9 @@ pub mod list;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::cell::RefCell;
+use std::default::Default;
 
-use self::atomic::Ptr;
+use self::atomic::{Ptr, Owned};
 use self::list::Node;
 
 #[derive(Debug)]
@@ -104,14 +105,75 @@ impl ThreadPinMarker {
     }
 }
 
+/// We cannot afford to allocate a new node in any data structure
+/// per thing we want to garbage collect, since we'd get an infinite
+/// loop of generated garbage, as the garbage list itself also needs
+/// to be garbage collected. We use this `Bag` to group together some
+/// number of elements, and use them as one unit.
+#[derive(Debug)]
+struct Bag {
+    data: [Option<Garbage>; BAG_SIZE],
+    index: usize,
+}
+
+const BAG_SIZE: usize = 16;
+
+struct Garbage(Box<FnOnce()>);
+
+unsafe impl Send for Garbage {}
+unsafe impl Sync for Garbage {}
+
+impl Garbage {
+    fn new<T>(t: T) -> Self
+    where
+        T: 'static,
+    {
+        Garbage(Box::new(move || drop(t)))
+    }
+}
+
+impl ::std::fmt::Debug for Garbage {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+        use std::fmt::Pointer;
+        fmt.write_str("Garbage { fn: ")?;
+        self.0.fmt(fmt)?;
+        fmt.write_str(" }")
+    }
+}
+
+impl Bag {
+    fn new() -> Self {
+        Self {
+            data: Default::default(),
+            index: 0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.index == BAG_SIZE
+    }
+
+    fn try_insert(&mut self, t: Garbage) -> Result<(), Garbage> {
+        if self.is_full() {
+            Err(t)
+        } else {
+            self.data[self.index] = Some(t);
+            self.index += 1;
+            Ok(())
+        }
+    }
+}
+
+
 struct GlobalState {
     epoch: AtomicUsize,
     pins: list::List<ThreadPinMarker>,
-    garbage: [list::List<AtomicPtr<()>>; 3],
+    garbage: queue::Queue<(usize, Bag)>,
 }
 
 impl GlobalState {
     fn can_increment_epoch(&self) -> bool {
+        println!("can increment epoch?");
         let global_epoch = self.epoch.load(Ordering::SeqCst);
         pin(|_pin| {
             self.pins.all(
@@ -124,13 +186,39 @@ impl GlobalState {
         })
     }
 
-    fn add_garbage<'scope, T>(&self, ptr: *mut T, epoch: usize, _pin: Pin<'scope>) {
-        let global_epoch = self.epoch.load(Ordering::SeqCst);
-        // garbage[0] = e
-        // garbage[1] = e - 1
-        // garbage[2] = e - 2
-        let bucket = global_epoch - epoch;
-        self.garbage[bucket].insert(AtomicPtr::new(ptr as *mut ()), _pin);
+    fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
+        println!("add_garbage_bag");
+        self.garbage.push((epoch, bag), _pin);
+    }
+
+    /// Increments the current epoch and puts all garbage in the safe-to-free
+    /// garbare queue.
+    fn increment_epoch<'scope>(&self, pin: Pin<'scope>) {
+        println!("increment queue");
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let ret = self.epoch.compare_and_swap(
+            epoch,
+            epoch + 1,
+            Ordering::SeqCst,
+        );
+        if ret == epoch {
+            while let Some((e, mut bag)) =
+                self.garbage.pop_if(
+                    |&(e, _)| epoch.saturating_sub(e) <= 2,
+                    pin,
+                )
+            {
+                for i in 0..bag.index {
+                    let garbage = bag.data[i].take();
+                    if garbage.is_none() {
+                        break;
+                    }
+                    let garbage: Garbage = garbage.unwrap();
+                    println!("{:?}", bag);
+                    // TODO: call the FnOnce here
+                }
+            }
+        }
     }
 }
 
@@ -151,11 +239,7 @@ lazy_static! {
         GlobalState {
             epoch: AtomicUsize::new(0),
             pins: list::List::new(),
-            garbage: [
-                list::List::new(),
-                list::List::new(),
-                list::List::new()
-            ],
+            garbage: queue::Queue::new(),
         }
     };
 }
@@ -164,6 +248,31 @@ struct LocalState {
     epoch: usize,
     thread_pin: *const Node<ThreadPinMarker>,
     pin_count: usize,
+    garbage_bag: Bag,
+}
+
+impl LocalState {
+    /// Adds the garbage in the local bag if there is room.  If not, we push it to the global
+    /// queue, and make a new local bag.
+    ///
+    /// Note that we assume that only one thread is calling this on some data.
+    /// This is maybe enforced by `Owned`?
+    fn add_garbage<'scope, T>(&mut self, o: Owned<T>, pin: Pin<'scope>)
+    where
+        T: 'static,
+    {
+        let g = Garbage::new(o);
+        match self.garbage_bag.try_insert(g) {
+            Ok(()) => {}
+            Err(o) => {
+                let mut new_bag = Bag::new();
+                let res = new_bag.try_insert(o);
+                assert!(res.is_ok());
+                ::std::mem::swap(&mut self.garbage_bag, &mut new_bag);
+                GLOBAL.add_garbage_bag(new_bag, self.epoch, pin);
+            }
+        };
+    }
 }
 
 thread_local! {
@@ -172,6 +281,7 @@ thread_local! {
             epoch: 0,
             thread_pin: ::std::ptr::null(),
             pin_count: 0,
+            garbage_bag: Bag::new(),
         })
     }
 }
@@ -187,11 +297,18 @@ impl<'scope> Pin<'scope> {
     pub(crate) fn fake() -> Self {
         Pin { _marker: PhantomData }
     }
+
+    pub fn add_garbage<T>(&self, o: Owned<T>)
+    where
+        T: 'static,
+    {
+        LOCAL_EPOCH.with(|l| l.borrow_mut().add_garbage(o, *self));
+    }
 }
 
 pub fn pin<'scope, F, R>(f: F) -> R
 where
-    F: Fn(Pin<'scope>) -> R,
+    F: FnOnce(Pin<'scope>) -> R,
 {
     // Make the pin
     let p = Pin { _marker: PhantomData };
@@ -217,7 +334,7 @@ where
             e.pin_count
         };
         if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch() {
-            let a = GLOBAL.epoch.fetch_add(1, Ordering::SeqCst);
+            GLOBAL.increment_epoch(p);
         }
     });
 
