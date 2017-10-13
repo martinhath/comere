@@ -122,7 +122,7 @@ where
                 let res = self.head.compare_and_set(head, next, Release, _pin);
                 match res {
                     Ok(n) => {
-                        _pin.add_garbage(unsafe { head.into_owned() });
+                        _pin.add_garbage(head.into_owned());
                         ::std::ptr::read(&node.data)
                     }
                     Err(e) => None,
@@ -141,13 +141,20 @@ where
         let next: Ptr<Node<T>> = h.next.load(Acquire, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => {
+                // This `unwrap` is alright, since we know that only
+                // the sentinel node, `head` here, is the only node
+                // with `data = None`.
                 let d: &T = node.data.as_ref().unwrap();
                 if f(d) {
                     unsafe {
                         let res = self.head.compare_and_set(head, next, Release, _pin);
                         match res {
                             Ok(n) => {
-                                _pin.add_garbage(unsafe { head.into_owned() });
+                                let o = head.into_owned();
+                                let mem = ::std::mem::transmute::<Owned<Node<T>>, usize>(o);
+                                println!("add 0x{:x} to garbage", mem);
+                                let o = ::std::mem::transmute::<usize, Owned<Node<T>>>(mem);
+                                _pin.add_garbage(o);
                                 ::std::ptr::read(&node.data)
                             }
                             Err(e) => None,

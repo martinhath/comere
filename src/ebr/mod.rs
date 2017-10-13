@@ -128,7 +128,9 @@ impl Garbage {
     where
         T: 'static,
     {
-        Garbage(Box::new(move || drop(t)))
+        let g = Garbage(Box::new(move || drop(t)));
+        println!("making Garbage {:?}", g);
+        g
     }
 }
 
@@ -162,6 +164,13 @@ impl Bag {
             Ok(())
         }
     }
+
+    fn print_addrs(&self) {
+        for i in 0..self.index {
+            print!("{:?}, ", self.data[i].as_ref().unwrap());
+        }
+        println!();
+    }
 }
 
 
@@ -188,6 +197,7 @@ impl GlobalState {
 
     fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
         println!("add_garbage_bag");
+        bag.print_addrs();
         self.garbage.push((epoch, bag), _pin);
     }
 
@@ -208,13 +218,27 @@ impl GlobalState {
                     pin,
                 )
             {
+                // Since we've popped the bag from the queue,
+                // this thread is the only thread accessing the bag.
+                // This isn't true in general, since `pop_if` accesses
+                // the bag, and can read whatever it wants.
                 for i in 0..bag.index {
                     let garbage = bag.data[i].take();
                     if garbage.is_none() {
                         break;
                     }
                     let garbage: Garbage = garbage.unwrap();
-                    println!("{:?}", bag);
+                    {
+                        use std::io::Write;
+                        let a = ::std::io::stdout();
+                        let mut b = a.lock();
+                        let _ = b.write_fmt(format_args!("Dropping closure at: {:?}", garbage));
+                        let _ = b.flush();
+                    }
+
+                    ::std::mem::drop(garbage);
+                    println!("ok");
+                    // ::std::mem::forget(garbage);
                     // TODO: call the FnOnce here
                 }
             }
