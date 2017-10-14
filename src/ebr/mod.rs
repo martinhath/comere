@@ -43,6 +43,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::cell::RefCell;
 use std::default::Default;
+use std::mem::ManuallyDrop;
 
 use self::atomic::{Ptr, Owned};
 use self::list::Node;
@@ -116,7 +117,7 @@ struct Bag {
     index: usize,
 }
 
-const BAG_SIZE: usize = 16;
+const BAG_SIZE: usize = 32;
 
 struct Garbage(Box<FnOnce()>);
 
@@ -124,12 +125,13 @@ unsafe impl Send for Garbage {}
 unsafe impl Sync for Garbage {}
 
 impl Garbage {
-    fn new<T>(t: T) -> Self
+    fn new<T>(t: Owned<T>) -> Self
     where
         T: 'static,
     {
-        let g = Garbage(Box::new(move || drop(t)));
-        println!("making Garbage {:?}", g);
+        let data = unsafe { ::std::mem::transmute::<Owned<T>, usize>(t) };
+        let t = unsafe { ::std::mem::transmute::<usize, Owned<T>>(data) };
+        let g = Garbage(Box::new(move || { ::std::mem::drop(t); }));
         g
     }
 }
@@ -164,25 +166,16 @@ impl Bag {
             Ok(())
         }
     }
-
-    fn print_addrs(&self) {
-        for i in 0..self.index {
-            print!("{:?}, ", self.data[i].as_ref().unwrap());
-        }
-        println!();
-    }
 }
-
 
 struct GlobalState {
     epoch: AtomicUsize,
     pins: list::List<ThreadPinMarker>,
-    garbage: queue::Queue<(usize, Bag)>,
+    garbage: queue::Queue<(usize, ManuallyDrop<Bag>)>,
 }
 
 impl GlobalState {
     fn can_increment_epoch(&self) -> bool {
-        println!("can increment epoch?");
         let global_epoch = self.epoch.load(Ordering::SeqCst);
         pin(|_pin| {
             self.pins.all(
@@ -196,15 +189,12 @@ impl GlobalState {
     }
 
     fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
-        println!("add_garbage_bag");
-        bag.print_addrs();
-        self.garbage.push((epoch, bag), _pin);
+        self.garbage.push((epoch, ManuallyDrop::new(bag)), _pin);
     }
 
     /// Increments the current epoch and puts all garbage in the safe-to-free
     /// garbare queue.
     fn increment_epoch<'scope>(&self, pin: Pin<'scope>) {
-        println!("increment queue");
         let epoch = self.epoch.load(Ordering::SeqCst);
         let ret = self.epoch.compare_and_swap(
             epoch,
@@ -212,9 +202,10 @@ impl GlobalState {
             Ordering::SeqCst,
         );
         if ret == epoch {
+            let current_epoch = epoch + 1;
             while let Some((e, mut bag)) =
                 self.garbage.pop_if(
-                    |&(e, _)| epoch.saturating_sub(e) <= 2,
+                    |&(e, _)| current_epoch.saturating_sub(e) >= 2,
                     pin,
                 )
             {
@@ -228,19 +219,12 @@ impl GlobalState {
                         break;
                     }
                     let garbage: Garbage = garbage.unwrap();
-                    {
-                        use std::io::Write;
-                        let a = ::std::io::stdout();
-                        let mut b = a.lock();
-                        let _ = b.write_fmt(format_args!("Dropping closure at: {:?}", garbage));
-                        let _ = b.flush();
-                    }
-
                     ::std::mem::drop(garbage);
-                    println!("ok");
                     // ::std::mem::forget(garbage);
                     // TODO: call the FnOnce here
                 }
+                // The node we just popped may be causing problems?
+                // Maybe this bag is double freed or something?
             }
         }
     }
@@ -357,6 +341,7 @@ where
             e.pin_count += 1;
             e.pin_count
         };
+        // TODO: reset this number to something higher
         if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch() {
             GLOBAL.increment_epoch(p);
         }

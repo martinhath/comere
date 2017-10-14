@@ -783,7 +783,7 @@ impl<T> AsMut<T> for Owned<T> {
 /// least significant bits of the address.
 #[derive(Debug)]
 pub struct Ptr<'scope, T: 'scope> {
-    data: usize,
+    pub data: usize,
     _marker: PhantomData<(&'scope (), *const T)>,
 }
 

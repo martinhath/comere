@@ -152,7 +152,6 @@ where
                             Ok(n) => {
                                 let o = head.into_owned();
                                 let mem = ::std::mem::transmute::<Owned<Node<T>>, usize>(o);
-                                println!("add 0x{:x} to garbage", mem);
                                 let o = ::std::mem::transmute::<usize, Owned<Node<T>>>(mem);
                                 _pin.add_garbage(o);
                                 ::std::ptr::read(&node.data)
@@ -197,6 +196,7 @@ where
 mod test {
     use super::*;
 
+    #[derive(Debug)]
     struct Payload {
         data: String,
     }
