@@ -4,6 +4,7 @@
 
 use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
 use std::default::Default;
+use std::mem::ManuallyDrop;
 
 use super::{Pin, pin};
 
@@ -21,14 +22,21 @@ pub struct Node<T> {
     // as in `crossbeam-epoch`. This will probably
     // improve memory usage, which will in order
     // improve cache behaviour.
-    data: Option<T>,
+    data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
 impl<T> Node<T> {
-    pub fn empty() -> Self {
+    fn new(data: T) -> Self {
         Self {
-            data: None,
+            data: ManuallyDrop::new(data),
+            next: Default::default(),
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            data: unsafe { ::std::mem::uninitialized() },
             next: Default::default(),
         }
     }
@@ -39,10 +47,7 @@ where
     T: 'static,
 {
     pub fn new() -> Self {
-        let sentinel = Owned::new(Node {
-            data: None,
-            next: Default::default(),
-        });
+        let sentinel = Owned::new(Node::empty());
         let pin = Pin::fake();
         let ptr = sentinel.into_ptr(pin);
         let q = Queue {
@@ -55,10 +60,7 @@ where
     }
 
     pub fn push<'scope>(&self, t: T, _pin: Pin<'scope>) {
-        let node = Owned::new(Node {
-            data: Some(t),
-            next: Default::default(),
-        });
+        let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr(_pin);
         loop {
             let tail = self.tail.load(Acquire, _pin);
@@ -123,7 +125,7 @@ where
                 match res {
                     Ok(n) => {
                         _pin.add_garbage(head.into_owned());
-                        ::std::ptr::read(&node.data)
+                        Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                     }
                     Err(e) => None,
                 }
@@ -144,8 +146,7 @@ where
                 // This `unwrap` is alright, since we know that only
                 // the sentinel node, `head` here, is the only node
                 // with `data = None`.
-                let d: &T = node.data.as_ref().unwrap();
-                if f(d) {
+                if f(&node.data) {
                     unsafe {
                         let res = self.head.compare_and_set(head, next, Release, _pin);
                         match res {
@@ -154,7 +155,7 @@ where
                                 let mem = ::std::mem::transmute::<Owned<Node<T>>, usize>(o);
                                 let o = ::std::mem::transmute::<usize, Owned<Node<T>>>(mem);
                                 _pin.add_garbage(o);
-                                ::std::ptr::read(&node.data)
+                                Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                             }
                             Err(e) => None,
                         }
@@ -260,24 +261,97 @@ mod test {
 
     struct LargeStruct {
         b: [u8; 1024 * 4],
+        c: String,
     }
 
     impl LargeStruct {
         fn new() -> Self {
-            Self { b: [0; 1024 * 4] }
+            Self {
+                b: [0; 1024 * 4],
+                c: "asd".to_string(),
+            }
         }
     }
 
-    // This test confirms that the queue leaks memory.
     #[test]
     fn memory_usage() {
         let mut q: Queue<LargeStruct> = Queue::new();
-        // This will leak
         for i in 0..(1024 * 1024) {
             pin(|pin| {
                 q.push(LargeStruct::new(), pin);
                 q.pop(pin);
             })
         }
+    }
+
+    struct NoDrop;
+    impl Drop for NoDrop {
+        fn drop(&mut self) {
+            panic!("did drop!");
+        }
+    }
+
+    #[test]
+    fn no_drop() {
+        let q = Queue::new();
+        for i in 0..1024 {
+            pin(|pin| {
+                q.push(NoDrop, pin);
+                let r = q.pop(pin).unwrap();
+                ::std::mem::forget(r);
+            })
+        }
+    }
+
+    struct SingleDrop(bool);
+    impl Drop for SingleDrop {
+        fn drop(&mut self) {
+            if (self.0) {
+                panic!("Dropped before!");
+            }
+            self.0 = true;
+        }
+    }
+
+    #[test]
+    fn single_drop() {
+        let q = Queue::new();
+        for i in 0..1024 {
+            pin(|pin| {
+                q.push(SingleDrop(false), pin);
+                q.pop(pin);
+            })
+        }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct MustDrop<'a>(&'a AtomicUsize);
+
+    impl<'a> Drop for MustDrop<'a> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    lazy_static! {
+        static ref AtomicCount: AtomicUsize = {
+            AtomicUsize::new(0)
+        };
+    }
+
+    #[test]
+    fn do_drop() {
+        let q = Queue::new();
+        let iters = 1024;
+        for i in 0..iters {
+            let q = &q;
+            pin(move |pin| {
+                q.push(MustDrop(&AtomicCount), pin);
+                q.pop(pin);
+            });
+        }
+        assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
     }
 }

@@ -43,7 +43,6 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::cell::RefCell;
 use std::default::Default;
-use std::mem::ManuallyDrop;
 
 use self::atomic::{Ptr, Owned};
 use self::list::Node;
@@ -171,7 +170,7 @@ impl Bag {
 struct GlobalState {
     epoch: AtomicUsize,
     pins: list::List<ThreadPinMarker>,
-    garbage: queue::Queue<(usize, ManuallyDrop<Bag>)>,
+    garbage: queue::Queue<(usize, Bag)>,
 }
 
 impl GlobalState {
@@ -189,7 +188,7 @@ impl GlobalState {
     }
 
     fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
-        self.garbage.push((epoch, ManuallyDrop::new(bag)), _pin);
+        self.garbage.push((epoch, bag), _pin);
     }
 
     /// Increments the current epoch and puts all garbage in the safe-to-free
