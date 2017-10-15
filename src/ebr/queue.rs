@@ -6,9 +6,10 @@ use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
 use std::default::Default;
 use std::mem::ManuallyDrop;
 
-use super::{Pin, pin};
+use super::{Pin, pin, get_thread_id, DEBUG_PRINT};
 
 use super::atomic::{Owned, Atomic, Ptr};
+
 
 #[derive(Debug)]
 pub struct Queue<T> {
@@ -18,10 +19,8 @@ pub struct Queue<T> {
 
 #[derive(Debug)]
 pub struct Node<T> {
-    // TODO: Use `std::mem::ManuallyDrop` instead,
-    // as in `crossbeam-epoch`. This will probably
-    // improve memory usage, which will in order
-    // improve cache behaviour.
+    // We don't want to drop the data of the node when we drop the node itself; dropping the data
+    // is the responsibility of the caller.
     data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
@@ -124,6 +123,13 @@ where
                 let res = self.head.compare_and_set(head, next, Release, _pin);
                 match res {
                     Ok(n) => {
+                        if DEBUG_PRINT {
+                            println!(
+                                "[{}] Adding node as garbage: {:?}",
+                                get_thread_id(),
+                                head.data
+                            );
+                        }
                         _pin.add_garbage(head.into_owned());
                         Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                     }
@@ -151,10 +157,14 @@ where
                         let res = self.head.compare_and_set(head, next, Release, _pin);
                         match res {
                             Ok(n) => {
-                                let o = head.into_owned();
-                                let mem = ::std::mem::transmute::<Owned<Node<T>>, usize>(o);
-                                let o = ::std::mem::transmute::<usize, Owned<Node<T>>>(mem);
-                                _pin.add_garbage(o);
+                                if DEBUG_PRINT {
+                                    println!(
+                                        "[{}] Adding node as garbage: {:?}",
+                                        get_thread_id(),
+                                        head.data
+                                    );
+                                }
+                                _pin.add_garbage(head.into_owned());
                                 Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                             }
                             Err(e) => None,
@@ -353,5 +363,54 @@ mod test {
             });
         }
         assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
+    }
+
+
+    use std::thread::spawn;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    #[test]
+    fn is_unique_receiver() {
+        const N_THREADS: usize = 16;
+        const ELEMS: usize = 512 * 512;
+
+        let q = Arc::new(Queue::new());
+        // Markers to check.
+        let markers = Arc::new(
+            (0..ELEMS)
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        );
+        // Fill the queue with all numbers
+        pin(|pin| for i in 0..ELEMS {
+            q.push(i, pin);
+        });
+
+        // Each threads pops something until the queue is empty,
+        // and CASes the element they got back in `markers`.
+        // If any CAS fails, we've returned the same element to two
+        // threads, which should not happen, since all nubmers are only
+        // once in the queue.
+        let threads = (0..N_THREADS)
+            .map(|i| {
+                let markers = markers.clone();
+                let q = q.clone();
+                spawn(move || while let Some(i) = pin(|pin| q.pop(pin)) {
+                    let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                    assert_eq!(ret, false);
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Wait for all threads to finish
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+
+        // Check that all elements were returned from the queue
+        for m in markers.iter() {
+            assert!(m.load(Ordering::SeqCst));
+        }
     }
 }

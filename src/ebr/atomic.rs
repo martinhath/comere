@@ -598,7 +598,7 @@ impl<'scope, T> From<Ptr<'scope, T>> for Atomic<T> {
 /// least significant bits of the address.
 #[derive(Debug)]
 pub struct Owned<T> {
-    data: usize,
+    pub data: usize,
     _marker: PhantomData<Box<T>>,
 }
 
@@ -729,13 +729,15 @@ impl<T> Deref for Owned<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        unsafe { &*((self.data & !low_bits::<T>()) as *const T) }
+        let raw = (self.data & !low_bits::<T>()) as *const T;
+        unsafe { &*(raw) }
     }
 }
 
 impl<T> DerefMut for Owned<T> {
     fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *((self.data & !low_bits::<T>()) as *mut T) }
+        let raw = (self.data & !low_bits::<T>()) as *mut T;
+        unsafe { &mut *(raw) }
     }
 }
 
