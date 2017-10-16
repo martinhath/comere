@@ -39,6 +39,11 @@
 //! different destructors for different types, so that we only worry about `Drop`ping, and not the
 //! types of what we are dropping.
 //!
+//! `Garbage` is just a `Box<FnOnce>`, so it is a closure that is heap allocated (since it is not
+//! `sized`). When we `Drop` the garbage, we first drop the closure, which in turn drops the values
+//! it has captured, which includes the `Owned` we passed it. Then we drop the heap pointer. Both
+//! of these values should be unique.
+//!
 
 #[allow(unused_variables)]
 #[allow(dead_code)]
@@ -58,7 +63,7 @@ use std::default::Default;
 use self::atomic::{Ptr, Owned};
 use self::list::Node;
 
-const DEBUG_PRINT: bool = true;
+const DEBUG_PRINT: bool = false;
 
 #[derive(Debug)]
 /// A marker which is used by the threads to signal if it is pinner or not, as well as which epoch
@@ -143,6 +148,19 @@ const BAG_SIZE: usize = 32;
 /// This is one unit of garbage. We can think of it as just a T.
 struct Garbage(Box<FnOnce()>);
 
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::Mutex;
+lazy_static! {
+    static ref MEMORY_SANITIZER: Mutex<HashMap<usize, bool>> = {
+        Mutex::new(HashMap::new())
+    };
+    static ref CLOSURE_MEMORY_MAP: Mutex<HashMap<usize, usize>> = {
+        Mutex::new(HashMap::new())
+    };
+}
+
 unsafe impl Send for Garbage {}
 unsafe impl Sync for Garbage {}
 
@@ -158,16 +176,80 @@ impl Garbage {
         // closure is dropped.
         let d = t.data;
         let g = Garbage(Box::new(move || { ::std::mem::drop(t); }));
+        {
+            // TODO: debug only
+            println!("register data memory at {:x}", d);
+            match MEMORY_SANITIZER.lock().unwrap().entry(d) {
+                Entry::Vacant(p) => p.insert(true),
+                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", d),
+            };
+            let closure_addr = g.closure_addr();
+            println!("register closure memory at {:x}", d);
+            match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
+                Entry::Vacant(p) => p.insert(true),
+                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", closure_addr),
+            };
+            println!(
+                "setup closure to data mapping {:x} -> {:x}",
+                closure_addr,
+                d
+            );
+            match CLOSURE_MEMORY_MAP.lock().unwrap().entry(closure_addr) {
+                Entry::Vacant(p) => p.insert(d),
+                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", closure_addr),
+            };
+        }
         if DEBUG_PRINT {
             println!("[{}] made {:?} with data = 0x{:x}", get_thread_id(), g, d);
         }
         g
     }
+
+    fn closure_addr(&self) -> usize {
+        unsafe { ::std::mem::transmute::<*const FnOnce(), FatPtr>(&*self.0) }.data
+    }
+}
+
+#[repr(C)]
+struct FatPtr {
+    pub data: usize,
+    pub _padding: usize,
 }
 
 // TODO: debug only
 impl Drop for Garbage {
     fn drop(&mut self) {
+        {
+            // TODO: remove debug
+            let closure_addr = self.closure_addr();
+            // Untag the closure memory
+            match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
+                Entry::Vacant(_) => panic!("Closure memory is not tagged: {:x}", closure_addr),
+                Entry::Occupied(mut marked) => {
+                    if *marked.get() {
+                        *marked.get_mut() = false;
+                    } else {
+                        panic!("Closure memory is already fred: {:x}", closure_addr);
+                    }
+                }
+            }
+            let data_addr = CLOSURE_MEMORY_MAP
+                .lock()
+                .unwrap()
+                .get(&closure_addr)
+                .cloned()
+                .expect("Closure not in the map!");
+            match MEMORY_SANITIZER.lock().unwrap().entry(data_addr) {
+                Entry::Vacant(_) => panic!("Data memory is not tagged: {:x}", data_addr),
+                Entry::Occupied(mut marked) => {
+                    if *marked.get() {
+                        *marked.get_mut() = false;
+                    } else {
+                        panic!("Data memory is already fred: {:x}", data_addr);
+                    }
+                }
+            }
+        }
         if DEBUG_PRINT {
             println!("[{}] Garbage::drop: {:?}", get_thread_id(), self);
         }
