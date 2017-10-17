@@ -63,7 +63,8 @@ use std::default::Default;
 use self::atomic::{Ptr, Owned};
 use self::list::Node;
 
-const DEBUG_PRINT: bool = false;
+const DEBUG_PRINT: bool = true;
+const SANITIZE: bool = true;
 
 #[derive(Debug)]
 /// A marker which is used by the threads to signal if it is pinner or not, as well as which epoch
@@ -141,6 +142,8 @@ impl ThreadPinMarker {
 struct Bag {
     data: [Option<Garbage>; BAG_SIZE],
     index: usize,
+    thread: usize,
+    count: usize,
 }
 
 const BAG_SIZE: usize = 32;
@@ -153,6 +156,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Mutex;
 lazy_static! {
+    // Map memory addresses to wether they are used or not.
+    // Set to `true` when allocated, set to `false` when fred.
     static ref MEMORY_SANITIZER: Mutex<HashMap<usize, bool>> = {
         Mutex::new(HashMap::new())
     };
@@ -176,27 +181,65 @@ impl Garbage {
         // closure is dropped.
         let d = t.data;
         let g = Garbage(Box::new(move || { ::std::mem::drop(t); }));
-        {
+        if SANITIZE {
             // TODO: debug only
-            println!("register data memory at {:x}", d);
+            let thread_id = get_thread_id();
+            println!("{} register data memory at {:x}", thread_id, d);
             match MEMORY_SANITIZER.lock().unwrap().entry(d) {
-                Entry::Vacant(p) => p.insert(true),
-                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", d),
-            };
+                Entry::Vacant(p) => {
+                    p.insert(true);
+                }
+                Entry::Occupied(mut o) => {
+                    if *o.get() {
+                        println!("{} Error", thread_id);
+                        println!("{}Tried to register used memory: {:x}", thread_id, d);
+                        panic!();
+                    } else {
+                        *o.get_mut() = true;
+                    }
+                }
+            }
             let closure_addr = g.closure_addr();
-            println!("register closure memory at {:x}", d);
+            println!(
+                "{} register closure memory at {:x}",
+                thread_id,
+                closure_addr
+            );
             match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
-                Entry::Vacant(p) => p.insert(true),
-                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", closure_addr),
+                Entry::Vacant(p) => {
+                    p.insert(true);
+                }
+                Entry::Occupied(mut o) => {
+                    if *o.get() {
+                        println!("{} Error", thread_id);
+                        println!(
+                            "{} Tried to register used memory: {:x}",
+                            thread_id,
+                            closure_addr
+                        );
+                        panic!();
+                    } else {
+                        *o.get_mut() = true;
+                    }
+                }
             };
             println!(
-                "setup closure to data mapping {:x} -> {:x}",
+                "{} setup closure to data mapping {:x} -> {:x}",
+                thread_id,
                 closure_addr,
                 d
             );
             match CLOSURE_MEMORY_MAP.lock().unwrap().entry(closure_addr) {
                 Entry::Vacant(p) => p.insert(d),
-                Entry::Occupied(_) => panic!("Tried to register used memory: {:x}", closure_addr),
+                Entry::Occupied(_) => {
+                    println!("{} Error", thread_id);
+                    println!(
+                        "{} Tried to register used memory: {:x}",
+                        thread_id,
+                        closure_addr
+                    );
+                    panic!();
+                }
             };
         }
         if DEBUG_PRINT {
@@ -219,33 +262,63 @@ struct FatPtr {
 // TODO: debug only
 impl Drop for Garbage {
     fn drop(&mut self) {
-        {
+        if SANITIZE {
             // TODO: remove debug
             let closure_addr = self.closure_addr();
+            let thread_id = get_thread_id();
             // Untag the closure memory
+            println!(
+                "{} Set closure address to unused: {:x}",
+                thread_id,
+                closure_addr
+            );
+            // Mark the memory as fred. Either the entry is vacant, in which case it was never
+            // registered (error), or it is marked as either there or not. If it is `true`, we're
+            // good. If it is `false`, it has already been freed - error.
             match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
-                Entry::Vacant(_) => panic!("Closure memory is not tagged: {:x}", closure_addr),
+                Entry::Vacant(_) => {
+                    println!("{} Error", thread_id);
+                    println!(
+                        "{} Closure memory is not tagged: {:x}",
+                        thread_id,
+                        closure_addr
+                    );
+                    panic!();
+                }
                 Entry::Occupied(mut marked) => {
                     if *marked.get() {
                         *marked.get_mut() = false;
                     } else {
-                        panic!("Closure memory is already fred: {:x}", closure_addr);
+                        println!("{} Error", thread_id);
+                        println!(
+                            "{} Closure memory is already fred: {:x}",
+                            thread_id,
+                            closure_addr
+                        );
+                        panic!();
                     }
                 }
             }
+            println!("{} Remove closure mapping: {:x}", thread_id, closure_addr);
             let data_addr = CLOSURE_MEMORY_MAP
                 .lock()
                 .unwrap()
-                .get(&closure_addr)
-                .cloned()
+                .remove(&closure_addr)
                 .expect("Closure not in the map!");
+            println!("{} Remove data address: {:x}", thread_id, data_addr);
             match MEMORY_SANITIZER.lock().unwrap().entry(data_addr) {
-                Entry::Vacant(_) => panic!("Data memory is not tagged: {:x}", data_addr),
+                Entry::Vacant(_) => {
+                    println!("{} Error", thread_id);
+                    println!("{} Data memory is not tagged: {:x}", thread_id, data_addr);
+                    panic!();
+                }
                 Entry::Occupied(mut marked) => {
                     if *marked.get() {
                         *marked.get_mut() = false;
                     } else {
-                        panic!("Data memory is already fred: {:x}", data_addr);
+                        println!("{} Error", thread_id);
+                        println!("{} Data memory is already fred: {:x}", thread_id, data_addr);
+                        panic!();
                     }
                 }
             }
@@ -269,9 +342,15 @@ impl ::std::fmt::Debug for Garbage {
 impl Bag {
     /// Make a new empty bag.
     fn new() -> Self {
+        static mut COUNT: usize = 0;
+        unsafe {
+            COUNT += 1;
+        };
         Self {
             data: Default::default(),
             index: 0,
+            thread: get_thread_id(),
+            count: unsafe { COUNT },
         }
     }
 
@@ -298,6 +377,12 @@ impl Bag {
             for i in 0..self.index {
                 println!("\t{:?}", self.data[i]);
             }
+        }
+    }
+
+    fn drop(self) {
+        for i in 0..self.index {
+            assert!(self.data[i].is_none());
         }
     }
 }
@@ -367,13 +452,18 @@ impl GlobalState {
             Ordering::SeqCst,
         );
         if ret == epoch {
+            // This is a critical section, since this thread is pinned, and has not registered
+            // that we've read the newly incremented epoch.
             let current_epoch = epoch + 1;
+            let thread_id = get_thread_id();
             while let Some((e, mut bag)) =
+                // TODO: reset the 5 to 2 or 3
                 self.garbage.pop_if(
-                    |&(e, _)| current_epoch.saturating_sub(e) >= 3,
+                    |&(e, _)| current_epoch.saturating_sub(e) >= 5,
                     pin,
                 )
             {
+                println!("Freeing bag from thread {} #{}", bag.thread, bag.count);
                 // Since we've popped the bag from the queue,
                 // this thread is the only thread accessing the bag.
                 // This isn't true in general, since `pop_if` accesses
@@ -390,15 +480,16 @@ impl GlobalState {
                     // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`,
                     // or `it is Node<Bag>`, if it is the list we use for reclamation.
                     if DEBUG_PRINT {
-                        println!("[{}] dropping {:?} from", get_thread_id(), garbage);
-
+                        println!("[{}] dropping {:?} from", thread_id, garbage);
                     }
                     ::std::mem::drop(garbage);
                     if DEBUG_PRINT {
-                        println!("[{}] -\t\tthat went OK", get_thread_id());
+                        println!("[{}] -\t\tthat went OK", thread_id);
                     }
                 }
+                bag.drop();
             }
+            println!("[{}] Done dropping everything we found.", thread_id);
         }
     }
 }
@@ -454,7 +545,8 @@ impl LocalState {
                     self.thread_pin
                         .as_ref()
                         .map(|n| n.data.epoch(Ordering::SeqCst))
-                        .unwrap_or(0)
+                        // TODO: Why is this OK?
+                        .unwrap()
                 };
                 GLOBAL.add_garbage_bag(new_bag, e, pin);
             }

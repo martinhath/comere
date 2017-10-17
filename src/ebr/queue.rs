@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 /// A Michael-Scott Queue.
 
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
+use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
 use std::default::Default;
 use std::mem::ManuallyDrop;
 
@@ -43,7 +43,7 @@ impl<T> Node<T> {
 
 impl<T> Queue<T>
 where
-    T: 'static,
+    T: 'static + ::std::fmt::Debug,
 {
     pub fn new() -> Self {
         let sentinel = Owned::new(Node::empty());
@@ -59,26 +59,27 @@ where
     }
 
     pub fn push<'scope>(&self, t: T, _pin: Pin<'scope>) {
+        println!("[{}] queue::push({:?})", get_thread_id(), t);
         let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr(_pin);
         loop {
-            let tail = self.tail.load(Acquire, _pin);
+            let tail = self.tail.load(SeqCst, _pin);
             let t = unsafe { tail.deref() };
-            let next = t.next.load(Acquire, _pin);
+            let next = t.next.load(SeqCst, _pin);
             if unsafe { next.as_ref().is_some() } {
                 // tail wasnt't tail after all.
                 // We try to help out by moving the tail pointer
                 // on queue to the real tail we've seen, which is `next`.
-                let _ = self.tail.compare_and_set(tail, next, Release, _pin);
+                let _ = self.tail.compare_and_set(tail, next, SeqCst, _pin);
             } else {
                 let succ = t.next
-                    .compare_and_set(Ptr::null(), new_node, Release, _pin)
+                    .compare_and_set(Ptr::null(), new_node, SeqCst, _pin)
                     .is_ok();
                 if succ {
                     // the CAS succeded, and the new node is linked into the list.
                     // Update `queue.tail`. If we fail here it's OK, since another
                     // thread could have helped by moving the tail pointer.
-                    let _ = self.tail.compare_and_set(tail, new_node, Release, _pin);
+                    let _ = self.tail.compare_and_set(tail, new_node, SeqCst, _pin);
                     break;
                 }
             }
@@ -86,9 +87,9 @@ where
     }
 
     pub fn pop<'scope>(&self, _pin: Pin<'scope>) -> Option<T> {
-        let head: Ptr<Node<T>> = self.head.load(Acquire, _pin);
+        let head: Ptr<Node<T>> = self.head.load(SeqCst, _pin);
         let h: &Node<T> = unsafe { head.deref() };
-        let next: Ptr<Node<T>> = h.next.load(Acquire, _pin);
+        let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
                 // NOTE(martin): We don't really return the correct node here:
@@ -120,12 +121,12 @@ where
                 //
                 // This is where we leak memory: when we CAS out `head`,
                 // it is no longer reachable by the queue.
-                let res = self.head.compare_and_set(head, next, Release, _pin);
+                let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                 match res {
-                    Ok(n) => {
+                    Ok(()) => {
                         if DEBUG_PRINT {
                             println!(
-                                "[{}] Adding node as garbage: {:?}",
+                                "[{}] Adding node as garbage: {:x}",
                                 get_thread_id(),
                                 head.data
                             );
@@ -144,9 +145,9 @@ where
     where
         F: Fn(&T) -> bool,
     {
-        let head: Ptr<Node<T>> = self.head.load(Acquire, _pin);
+        let head: Ptr<Node<T>> = self.head.load(SeqCst, _pin);
         let h: &Node<T> = unsafe { head.deref() };
-        let next: Ptr<Node<T>> = h.next.load(Acquire, _pin);
+        let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => {
                 // This `unwrap` is alright, since we know that only
@@ -154,12 +155,12 @@ where
                 // with `data = None`.
                 if f(&node.data) {
                     unsafe {
-                        let res = self.head.compare_and_set(head, next, Release, _pin);
+                        let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                         match res {
-                            Ok(n) => {
+                            Ok(()) => {
                                 if DEBUG_PRINT {
                                     println!(
-                                        "[{}] Adding node as garbage: {:?}",
+                                        "[{}] Adding node as garbage: {:x}",
                                         get_thread_id(),
                                         head.data
                                     );
@@ -269,31 +270,32 @@ mod test {
         });
     }
 
-    struct LargeStruct {
-        b: [u8; 1024 * 4],
-        c: String,
-    }
+    // struct LargeStruct {
+    //     b: [u8; 1024 * 4],
+    //     c: String,
+    // }
 
-    impl LargeStruct {
-        fn new() -> Self {
-            Self {
-                b: [0; 1024 * 4],
-                c: "asd".to_string(),
-            }
-        }
-    }
+    // impl LargeStruct {
+    //     fn new() -> Self {
+    //         Self {
+    //             b: [0; 1024 * 4],
+    //             c: "asd".to_string(),
+    //         }
+    //     }
+    // }
 
-    #[test]
-    fn memory_usage() {
-        let mut q: Queue<LargeStruct> = Queue::new();
-        for i in 0..(1024 * 1024) {
-            pin(|pin| {
-                q.push(LargeStruct::new(), pin);
-                q.pop(pin);
-            })
-        }
-    }
+    // #[test]
+    // fn memory_usage() {
+    //     let mut q: Queue<LargeStruct> = Queue::new();
+    //     for i in 0..(1024 * 1024) {
+    //         pin(|pin| {
+    //             q.push(LargeStruct::new(), pin);
+    //             q.pop(pin);
+    //         })
+    //     }
+    // }
 
+    #[derive(Debug)]
     struct NoDrop;
     impl Drop for NoDrop {
         fn drop(&mut self) {
@@ -304,7 +306,8 @@ mod test {
     #[test]
     fn no_drop() {
         let q = Queue::new();
-        for i in 0..1024 {
+        let iters = 1024 * 1024;
+        for i in 0..iters {
             pin(|pin| {
                 q.push(NoDrop, pin);
                 let r = q.pop(pin).unwrap();
@@ -313,6 +316,7 @@ mod test {
         }
     }
 
+    #[derive(Debug)]
     struct SingleDrop(bool);
     impl Drop for SingleDrop {
         fn drop(&mut self) {
@@ -326,7 +330,8 @@ mod test {
     #[test]
     fn single_drop() {
         let q = Queue::new();
-        for i in 0..1024 {
+        let iters = 1024 * 1024;
+        for i in 0..iters {
             pin(|pin| {
                 q.push(SingleDrop(false), pin);
                 q.pop(pin);
@@ -336,7 +341,7 @@ mod test {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct MustDrop<'a>(&'a AtomicUsize);
 
     impl<'a> Drop for MustDrop<'a> {
@@ -354,7 +359,7 @@ mod test {
     #[test]
     fn do_drop() {
         let q = Queue::new();
-        let iters = 1024;
+        let iters = 1024 * 1024;
         for i in 0..iters {
             let q = &q;
             pin(move |pin| {
@@ -411,6 +416,126 @@ mod test {
         // Check that all elements were returned from the queue
         for m in markers.iter() {
             assert!(m.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn is_unique_receiver_if() {
+        const N_THREADS: usize = 16;
+        const ELEMS: usize = 512 * 512;
+
+        let q = Arc::new(Queue::new());
+        // Markers to check.
+        let markers = Arc::new(
+            (0..ELEMS)
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        );
+        // Fill the queue with all numbers
+        pin(|pin| for i in 0..ELEMS {
+            q.push(i, pin);
+        });
+
+        // Each threads pops something until the queue is empty,
+        // and CASes the element they got back in `markers`.
+        // If any CAS fails, we've returned the same element to two
+        // threads, which should not happen, since all nubmers are only
+        // once in the queue.
+        let threads = (0..N_THREADS)
+            .map(|i| {
+                let markers = markers.clone();
+                let q = q.clone();
+                spawn(move || {
+                    super::super::register_thread(i);
+                    while let Some(i) = pin(|pin| q.pop_if(|_| true, pin)) {
+                        let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                        assert_eq!(ret, false);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Wait for all threads to finish
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+
+        // Check that all elements were returned from the queue
+        for m in markers.iter() {
+            assert!(m.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn stress_test() {
+        const N_THREADS: usize = 16;
+        const N: usize = 1024 * 1024;
+
+        let source = Arc::new(Queue::new());
+        let sink = Arc::new(Queue::new());
+
+        pin(|pin| for n in 0..N {
+            source.push(n, pin);
+        });
+
+        let threads = (0..N_THREADS)
+            .map(|thread_id| {
+                let source = source.clone();
+                let sink = sink.clone();
+                spawn(move || {
+                    let source = source;
+                    let sink = sink;
+                    super::super::register_thread(thread_id);
+
+                    while let Some(i) = pin(|pin| source.pop(pin)) {
+                        pin(|pin| sink.push(i, pin));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+        let mut v = Vec::with_capacity(N);
+        pin(|pin| while let Some(i) = sink.pop(pin) {
+            v.push(i);
+        });
+        v.sort();
+        for (i, n) in v.into_iter().enumerate() {
+            assert_eq!(i, n);
+        }
+    }
+
+    #[test]
+    fn pop_if_push() {
+        const N_THREADS: usize = 16;
+        const N: usize = 1024 * 1024;
+
+        let q = Arc::new(Queue::new());
+
+        let threads = (0..N_THREADS)
+            .map(|thread_id| {
+                let q = q.clone();
+                spawn(move || {
+                    super::super::register_thread(thread_id);
+                    let push = thread_id % 2 == 0;
+
+                    pin(|pin| {
+                        if push {
+                            q.push(thread_id, pin);
+                        } else {
+                            if let Some(i) = q.pop(pin) {
+                                // register
+                            }
+                        }
+                    });
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
         }
     }
 }

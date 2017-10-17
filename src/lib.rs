@@ -253,7 +253,7 @@ mod test {
             assert!(q.is_empty(pin));
         });
 
-        let iter_count = 10_000_000;
+        let iter_count = 100_000;
         let sync_interval = 10000;
 
         let thread_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
