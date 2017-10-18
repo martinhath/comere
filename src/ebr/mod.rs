@@ -87,7 +87,7 @@ impl ThreadPinMarker {
             // the thread wasn't already pinned.
             e & !1
         };
-        let epoch = epoch << 1;
+        let epoch = (epoch << 1) | 1;
         if self.epoch.compare_and_swap(
             current_epoch,
             epoch,
@@ -103,7 +103,7 @@ impl ThreadPinMarker {
     /// Unmark the marker as pinned.
     fn unpin(&self) {
         let pinned_epoch = self.epoch.load(Ordering::SeqCst);
-        let unpinned_epoch = self.epoch.load(Ordering::SeqCst);
+        let unpinned_epoch = self.epoch.load(Ordering::SeqCst) & !1;
         if self.epoch.compare_and_swap(
             pinned_epoch,
             unpinned_epoch,
