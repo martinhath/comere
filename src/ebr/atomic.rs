@@ -95,7 +95,7 @@ fn data_with_tag<T>(data: usize, tag: usize) -> usize {
 /// [`Pin`]: struct.Pin.html
 #[derive(Debug)]
 pub struct Atomic<T> {
-    data: AtomicUsize,
+    pub data: AtomicUsize,
     _marker: PhantomData<*mut T>,
 }
 

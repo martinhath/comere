@@ -59,7 +59,9 @@ where
     }
 
     pub fn push<'scope>(&self, t: T, _pin: Pin<'scope>) {
-        println!("[{}] queue::push({:?})", get_thread_id(), t);
+        if DEBUG_PRINT {
+            println!("[{}] queue::push({:?})", get_thread_id(), t);
+        }
         let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr(_pin);
         loop {
@@ -145,30 +147,62 @@ where
     where
         F: Fn(&T) -> bool,
     {
+        let thread_id = get_thread_id();
+        if DEBUG_PRINT {
+            println!("[{}] pop_if enter", thread_id)
+        };
         let head: Ptr<Node<T>> = self.head.load(SeqCst, _pin);
         let h: &Node<T> = unsafe { head.deref() };
         let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => {
-                // This `unwrap` is alright, since we know that only
-                // the sentinel node, `head` here, is the only node
-                // with `data = None`.
+                if DEBUG_PRINT {
+                    println!("[{}] pop_if before f()", thread_id);
+                }
                 if f(&node.data) {
+                    if DEBUG_PRINT {
+                        println!("[{}] pop_if after f()", thread_id);
+                    }
                     unsafe {
+                        if DEBUG_PRINT {
+                            println!(
+                                "[{}] pop_if cas self.head: {:?} to {:?}",
+                                thread_id,
+                                head,
+                                next
+                            );
+                        }
                         let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                         match res {
                             Ok(()) => {
                                 if DEBUG_PRINT {
+                                    println!("[{}] cas succeeded.", thread_id);
                                     println!(
-                                        "[{}] Adding node as garbage: {:x}",
-                                        get_thread_id(),
+                                        "[{}] pop_if Adding node as garbage: {:x}",
+                                        thread_id,
                                         head.data
                                     );
                                 }
                                 _pin.add_garbage(head.into_owned());
-                                Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
+                                let v = ::std::ptr::read(&node.data);
+                                if DEBUG_PRINT {
+                                    println!("[{}] pop_if done with _pin.add_garbage", thread_id);
+                                    println!("[{}]        return {:?}", thread_id, v);
+                                    // next.data is the address of the node we read from.
+                                    // If the addresses for the two bags are different, we've
+                                    // copied the same bag into two different memory locations.
+                                    println!("[{}]        read the data from 0x{:x} ({})", thread_id,
+                                             next.data,
+                                             next.data);
+                                }
+                                Some(ManuallyDrop::into_inner(v))
                             }
-                            Err(e) => None,
+                            Err(e) => {
+                                if DEBUG_PRINT {
+                                    println!("[{}] cas failed.", thread_id);
+                                }
+                                None
+                            }
                         }
 
                     }
@@ -316,6 +350,19 @@ mod test {
         }
     }
 
+    #[test]
+    fn no_drop_if() {
+        let q = Queue::new();
+        let iters = 1024 * 1024;
+        for i in 0..iters {
+            pin(|pin| {
+                q.push(NoDrop, pin);
+                let r = q.pop_if(|_| true, pin).unwrap();
+                ::std::mem::forget(r);
+            })
+        }
+    }
+
     #[derive(Debug)]
     struct SingleDrop(bool);
     impl Drop for SingleDrop {
@@ -330,11 +377,23 @@ mod test {
     #[test]
     fn single_drop() {
         let q = Queue::new();
-        let iters = 1024 * 1024;
+        let iters = 1024 * 32;
         for i in 0..iters {
             pin(|pin| {
                 q.push(SingleDrop(false), pin);
                 q.pop(pin);
+            })
+        }
+    }
+
+    #[test]
+    fn single_drop_if() {
+        let q = Queue::new();
+        let iters = 1024 * 32;
+        for i in 0..iters {
+            pin(|pin| {
+                q.push(SingleDrop(false), pin);
+                q.pop_if(|_| true, pin);
             })
         }
     }
@@ -368,12 +427,24 @@ mod test {
             });
         }
         assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
-    }
 
+        AtomicCount.store(0, Ordering::SeqCst);
+
+        let q = Queue::new();
+        let iters = 1024 * 1024;
+        for i in 0..iters {
+            let q = &q;
+            pin(move |pin| {
+                q.push(MustDrop(&AtomicCount), pin);
+                q.pop_if(|_| true, pin);
+            });
+        }
+        assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
+    }
 
     use std::thread::spawn;
     use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn is_unique_receiver() {
@@ -513,23 +584,34 @@ mod test {
         const N: usize = 1024 * 1024;
 
         let q = Arc::new(Queue::new());
+        let res = Arc::new(Mutex::new([0; N_THREADS]));
 
         let threads = (0..N_THREADS)
             .map(|thread_id| {
                 let q = q.clone();
+                let res = res.clone();
                 spawn(move || {
                     super::super::register_thread(thread_id);
                     let push = thread_id % 2 == 0;
+                    let mut recv = [0; N_THREADS];
 
-                    pin(|pin| {
-                        if push {
-                            q.push(thread_id, pin);
-                        } else {
-                            if let Some(i) = q.pop(pin) {
-                                // register
+                    for i in 0..N {
+                        pin(|pin| {
+                            if push {
+                                q.push(thread_id, pin);
+                            } else {
+                                if let Some(i) = q.pop_if(|_| true, pin) {
+                                    // register
+                                    recv[i] += 1;
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
+
+                    let mut r = res.lock().unwrap();
+                    for (i, &n) in recv.iter().enumerate() {
+                        r[i] += n;
+                    }
                 })
             })
             .collect::<Vec<_>>();

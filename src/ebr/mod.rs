@@ -152,6 +152,7 @@ const BAG_SIZE: usize = 32;
 struct Garbage(Box<FnOnce()>);
 
 
+// TODO: debug only
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Mutex;
@@ -362,13 +363,21 @@ impl Bag {
     /// Try to insert `Garbage` into the bag. If successful we return `Ok(())`, and if not we
     /// return `Err(garbage)`.
     fn try_insert(&mut self, t: Garbage) -> Result<(), Garbage> {
-        if self.is_full() {
+        let thread_id = get_thread_id();
+        if DEBUG_PRINT {
+            println!("[{}] Bag::try_insert start", thread_id);
+        }
+        let ret = if self.is_full() {
             Err(t)
         } else {
             self.data[self.index] = Some(t);
             self.index += 1;
             Ok(())
+        };
+        if DEBUG_PRINT {
+            println!("[{}] Bag::try_insert end", thread_id);
         }
+        ret
     }
 
     // TODO: debug only
@@ -380,6 +389,11 @@ impl Bag {
         }
     }
 
+    // TODO: debug only
+    // Maybe we should keep this: we use this to explicitly drop the bag when we want to destroy
+    // it, and when we do, we should have `take`n out all elements in the bag, for explicit
+    // dropping of `Garbage` as well. The exception is when we shut down, and the bag is not full -
+    // then we `drop` the bag, and elements are `Some`, but then this function isn't called.
     fn drop(self) {
         for i in 0..self.index {
             assert!(self.data[i].is_none());
@@ -414,6 +428,7 @@ impl GlobalState {
     /// less than the global epoch, we cannot increment the epoch.
     fn can_increment_epoch(&self) -> bool {
         let global_epoch = self.epoch.load(Ordering::SeqCst);
+        let thread_id = get_thread_id();
         // We don't need to worry about the list changing as we walk through it:
         // if we see an unpinned element, and it changes, it means that the thread
         // read the new epoch, so thats OK. If we see a pinned element, in the
@@ -425,6 +440,14 @@ impl GlobalState {
             self.pins.all(
                 |n| {
                     let (epoch, pinned) = n.epoch_and_pinned(Ordering::SeqCst);
+                    if DEBUG_PRINT {
+                        println!(
+                            "[{}] found thread epoch {} pinned? {}",
+                            thread_id,
+                            epoch,
+                            pinned
+                        );
+                    }
                     if pinned { epoch == global_epoch } else { true }
                 },
                 _pin,
@@ -436,7 +459,12 @@ impl GlobalState {
     /// epoch that the thread is in.
     fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
         if DEBUG_PRINT {
-            println!("[{}] adding garbage bag", get_thread_id());
+            println!(
+                "[{}] adding garbage bag (thread {} #{})",
+                get_thread_id(),
+                bag.thread,
+                bag.count
+            );
             bag.print();
         }
         self.garbage.push((epoch, bag), _pin);
@@ -445,17 +473,24 @@ impl GlobalState {
     /// Increments the current epoch and puts all garbage in the safe-to-free
     /// garbare queue.
     fn increment_epoch<'scope>(&self, pin: Pin<'scope>) {
+        let thread_id = get_thread_id();
         let epoch = self.epoch.load(Ordering::SeqCst);
         let ret = self.epoch.compare_and_swap(
             epoch,
             epoch + 1,
             Ordering::SeqCst,
         );
+        if DEBUG_PRINT {
+            println!("[{}] try to reclaim memory", thread_id);
+        }
         if ret == epoch {
+            if DEBUG_PRINT {
+                println!("[{}] do collect.", thread_id);
+
+            }
             // This is a critical section, since this thread is pinned, and has not registered
             // that we've read the newly incremented epoch.
             let current_epoch = epoch + 1;
-            let thread_id = get_thread_id();
             while let Some((e, mut bag)) =
                 // TODO: reset the 5 to 2 or 3
                 self.garbage.pop_if(
@@ -463,7 +498,9 @@ impl GlobalState {
                     pin,
                 )
             {
-                println!("Freeing bag from thread {} #{}", bag.thread, bag.count);
+                if DEBUG_PRINT {
+                    println!("[{}] Freeing bag from thread {} #{}", thread_id, bag.thread, bag.count);
+                }
                 // Since we've popped the bag from the queue,
                 // this thread is the only thread accessing the bag.
                 // This isn't true in general, since `pop_if` accesses
@@ -489,7 +526,9 @@ impl GlobalState {
                 }
                 bag.drop();
             }
-            println!("[{}] Done dropping everything we found.", thread_id);
+            if DEBUG_PRINT {
+                println!("[{}] Done dropping everything we found.", thread_id);
+            }
         }
     }
 }
@@ -533,24 +572,60 @@ impl LocalState {
     where
         T: 'static,
     {
+        let thread_id = get_thread_id();
         let g = Garbage::new(o);
+        if DEBUG_PRINT {
+            println!("[{}] LocalState::add_garbage made g", thread_id);
+        }
         match self.garbage_bag.try_insert(g) {
-            Ok(()) => {}
+            Ok(()) => {if DEBUG_PRINT{ println!("[{}] inserted.", thread_id)}}
             Err(o) => {
-                let mut new_bag = Bag::new();
-                let res = new_bag.try_insert(o);
-                assert!(res.is_ok());
-                ::std::mem::swap(&mut self.garbage_bag, &mut new_bag);
-                let e = unsafe {
-                    self.thread_pin
+                if DEBUG_PRINT {
+                    println!("[{}] Swap garbage bags start", thread_id);
+                }
+                {
+                    let mut new_bag = Bag::new();
+                    let res = new_bag.try_insert(o);
+                    assert!(res.is_ok());
+                    if DEBUG_PRINT {
+                        println!("[{}] Swapping bags: ", thread_id);
+                        println!(
+                            "[{}] thread {} #{}",
+                            thread_id,
+                            self.garbage_bag.thread,
+                            self.garbage_bag.count
+                        );
+                        println!(
+                            "[{}] thread {} #{}",
+                            thread_id,
+                            new_bag.thread,
+                            new_bag.count
+                        );
+                    }
+                    ::std::mem::swap(&mut self.garbage_bag, &mut new_bag);
+                    let e = unsafe {
+                        self.thread_pin
                         .as_ref()
                         .map(|n| n.data.epoch(Ordering::SeqCst))
                         // TODO: Why is this OK?
                         .unwrap()
-                };
-                GLOBAL.add_garbage_bag(new_bag, e, pin);
+                    };
+                    GLOBAL.add_garbage_bag(new_bag, e, pin);
+                    if DEBUG_PRINT {
+                        println!("[{}] Swap garbage bags end", thread_id);
+                    }
+                }
             }
         };
+    }
+}
+
+// TODO: remove debug
+impl Drop for LocalState {
+    fn drop(&mut self) {
+        if DEBUG_PRINT {
+            println!("Dropping local state in thread {}", get_thread_id());
+        }
     }
 }
 
