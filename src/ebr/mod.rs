@@ -56,15 +56,12 @@ pub mod queue;
 pub mod list;
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::cell::RefCell;
 use std::default::Default;
 
-use self::atomic::{Ptr, Owned};
+use self::atomic::Owned;
 use self::list::Node;
-
-const DEBUG_PRINT: bool = true;
-const SANITIZE: bool = true;
 
 #[derive(Debug)]
 /// A marker which is used by the threads to signal if it is pinner or not, as well as which epoch
@@ -151,21 +148,6 @@ const BAG_SIZE: usize = 32;
 /// This is one unit of garbage. We can think of it as just a T.
 struct Garbage(Box<FnOnce()>);
 
-
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::sync::Mutex;
-lazy_static! {
-    // Map memory addresses to wether they are used or not.
-    // Set to `true` when allocated, set to `false` when fred.
-    static ref MEMORY_SANITIZER: Mutex<HashMap<usize, bool>> = {
-        Mutex::new(HashMap::new())
-    };
-    static ref CLOSURE_MEMORY_MAP: Mutex<HashMap<usize, usize>> = {
-        Mutex::new(HashMap::new())
-    };
-}
-
 unsafe impl Send for Garbage {}
 unsafe impl Sync for Garbage {}
 
@@ -180,156 +162,11 @@ impl Garbage {
         // Note that this closure is never actually called, but the destructors are ran when the
         // closure is dropped.
         let d = t.data;
-        let g = Garbage(Box::new(move || { ::std::mem::drop(t); }));
-        if SANITIZE {
-            // TODO: debug only
-            let thread_id = get_thread_id();
-            println!("{} register data memory at {:x}", thread_id, d);
-            match MEMORY_SANITIZER.lock().unwrap().entry(d) {
-                Entry::Vacant(p) => {
-                    p.insert(true);
-                }
-                Entry::Occupied(mut o) => {
-                    if *o.get() {
-                        println!("{} Error", thread_id);
-                        println!("{}Tried to register used memory: {:x}", thread_id, d);
-                        panic!();
-                    } else {
-                        *o.get_mut() = true;
-                    }
-                }
-            }
-            let closure_addr = g.closure_addr();
-            println!(
-                "{} register closure memory at {:x}",
-                thread_id,
-                closure_addr
-            );
-            match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
-                Entry::Vacant(p) => {
-                    p.insert(true);
-                }
-                Entry::Occupied(mut o) => {
-                    if *o.get() {
-                        println!("{} Error", thread_id);
-                        println!(
-                            "{} Tried to register used memory: {:x}",
-                            thread_id,
-                            closure_addr
-                        );
-                        panic!();
-                    } else {
-                        *o.get_mut() = true;
-                    }
-                }
-            };
-            println!(
-                "{} setup closure to data mapping {:x} -> {:x}",
-                thread_id,
-                closure_addr,
-                d
-            );
-            match CLOSURE_MEMORY_MAP.lock().unwrap().entry(closure_addr) {
-                Entry::Vacant(p) => p.insert(d),
-                Entry::Occupied(_) => {
-                    println!("{} Error", thread_id);
-                    println!(
-                        "{} Tried to register used memory: {:x}",
-                        thread_id,
-                        closure_addr
-                    );
-                    panic!();
-                }
-            };
-        }
-        if DEBUG_PRINT {
-            println!("[{}] made {:?} with data = 0x{:x}", get_thread_id(), g, d);
-        }
-        g
-    }
-
-    fn closure_addr(&self) -> usize {
-        unsafe { ::std::mem::transmute::<*const FnOnce(), FatPtr>(&*self.0) }.data
+        Garbage(Box::new(move || { ::std::mem::drop(t); }))
     }
 }
 
-#[repr(C)]
-struct FatPtr {
-    pub data: usize,
-    pub _padding: usize,
-}
-
-// TODO: debug only
-impl Drop for Garbage {
-    fn drop(&mut self) {
-        if SANITIZE {
-            // TODO: remove debug
-            let closure_addr = self.closure_addr();
-            let thread_id = get_thread_id();
-            // Untag the closure memory
-            println!(
-                "{} Set closure address to unused: {:x}",
-                thread_id,
-                closure_addr
-            );
-            // Mark the memory as fred. Either the entry is vacant, in which case it was never
-            // registered (error), or it is marked as either there or not. If it is `true`, we're
-            // good. If it is `false`, it has already been freed - error.
-            match MEMORY_SANITIZER.lock().unwrap().entry(closure_addr) {
-                Entry::Vacant(_) => {
-                    println!("{} Error", thread_id);
-                    println!(
-                        "{} Closure memory is not tagged: {:x}",
-                        thread_id,
-                        closure_addr
-                    );
-                    panic!();
-                }
-                Entry::Occupied(mut marked) => {
-                    if *marked.get() {
-                        *marked.get_mut() = false;
-                    } else {
-                        println!("{} Error", thread_id);
-                        println!(
-                            "{} Closure memory is already fred: {:x}",
-                            thread_id,
-                            closure_addr
-                        );
-                        panic!();
-                    }
-                }
-            }
-            println!("{} Remove closure mapping: {:x}", thread_id, closure_addr);
-            let data_addr = CLOSURE_MEMORY_MAP
-                .lock()
-                .unwrap()
-                .remove(&closure_addr)
-                .expect("Closure not in the map!");
-            println!("{} Remove data address: {:x}", thread_id, data_addr);
-            match MEMORY_SANITIZER.lock().unwrap().entry(data_addr) {
-                Entry::Vacant(_) => {
-                    println!("{} Error", thread_id);
-                    println!("{} Data memory is not tagged: {:x}", thread_id, data_addr);
-                    panic!();
-                }
-                Entry::Occupied(mut marked) => {
-                    if *marked.get() {
-                        *marked.get_mut() = false;
-                    } else {
-                        println!("{} Error", thread_id);
-                        println!("{} Data memory is already fred: {:x}", thread_id, data_addr);
-                        panic!();
-                    }
-                }
-            }
-        }
-        if DEBUG_PRINT {
-            println!("[{}] Garbage::drop: {:?}", get_thread_id(), self);
-        }
-    }
-}
-
-// TODO: debug only
+// So we can #[derive(Debug)] on `Bag`
 impl ::std::fmt::Debug for Garbage {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
         use std::fmt::Pointer;
@@ -371,31 +208,11 @@ impl Bag {
         }
     }
 
-    // TODO: debug only
-    fn print(&self) {
-        if DEBUG_PRINT {
-            for i in 0..self.index {
-                println!("\t{:?}", self.data[i]);
-            }
-        }
-    }
-
+    /// Call this on drop to assert that the elements in the bag are `take`n out and dropped
+    /// explicitly.
     fn drop(self) {
         for i in 0..self.index {
             assert!(self.data[i].is_none());
-        }
-    }
-}
-
-// TODO: debug only
-impl Drop for Bag {
-    fn drop(&mut self) {
-        if DEBUG_PRINT {
-            let id = get_thread_id();
-            println!("[{}] Bag::drop", id);
-            for i in 0..self.index {
-                println!("[{}]\t{:?}", id, self.data[i]);
-            }
         }
     }
 }
@@ -435,10 +252,6 @@ impl GlobalState {
     /// Add a bag of garbage to the global garbage list. The garbage is tagged with the
     /// epoch that the thread is in.
     fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
-        if DEBUG_PRINT {
-            println!("[{}] adding garbage bag", get_thread_id());
-            bag.print();
-        }
         self.garbage.push((epoch, bag), _pin);
     }
 
@@ -463,7 +276,6 @@ impl GlobalState {
                     pin,
                 )
             {
-                println!("Freeing bag from thread {} #{}", bag.thread, bag.count);
                 // Since we've popped the bag from the queue,
                 // this thread is the only thread accessing the bag.
                 // This isn't true in general, since `pop_if` accesses
@@ -479,31 +291,12 @@ impl GlobalState {
                     // This is where we free the memory of the nodes the data strucutres make.
                     // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`,
                     // or `it is Node<Bag>`, if it is the list we use for reclamation.
-                    if DEBUG_PRINT {
-                        println!("[{}] dropping {:?} from", thread_id, garbage);
-                    }
                     ::std::mem::drop(garbage);
-                    if DEBUG_PRINT {
-                        println!("[{}] -\t\tthat went OK", thread_id);
-                    }
                 }
                 bag.drop();
             }
-            println!("[{}] Done dropping everything we found.", thread_id);
         }
     }
-}
-
-pub fn print_epochs() {
-    pin(|_pin| {
-        GLOBAL.pins.all(
-            |n| {
-                println!("{:?}", n);
-                true
-            },
-            _pin,
-        )
-    });
 }
 
 lazy_static! {

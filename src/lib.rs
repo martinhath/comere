@@ -142,7 +142,6 @@ mod test {
             }
 
             assert!(q.is_empty());
-            println!("{:?}", *removals.lock().unwrap());
             // Confirm the counts
             for (i, &n) in removals.lock().unwrap().iter().enumerate() {
                 let push_thread = i % 2 == 0;
@@ -319,7 +318,6 @@ mod test {
             pin(|pin| {
                 assert!(q.is_empty(pin));
             });
-            println!("{:?}", *removals.lock().unwrap());
             // Confirm the counts
             for (i, &n) in removals.lock().unwrap().iter().enumerate() {
                 let push_thread = i % 2 == 0;
@@ -401,7 +399,6 @@ mod test {
             }
             // assert!(l.is_empty());
         }
-        ebr::print_epochs();
     }
 
 }

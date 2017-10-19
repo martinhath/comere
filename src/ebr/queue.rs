@@ -2,11 +2,11 @@
 #[allow(dead_code)]
 /// A Michael-Scott Queue.
 
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
+use std::sync::atomic::Ordering::{Relaxed, Acquire, SeqCst};
 use std::default::Default;
 use std::mem::ManuallyDrop;
 
-use super::{Pin, pin, get_thread_id, DEBUG_PRINT};
+use super::{Pin, get_thread_id};
 
 use super::atomic::{Owned, Atomic, Ptr};
 
@@ -59,7 +59,6 @@ where
     }
 
     pub fn push<'scope>(&self, t: T, _pin: Pin<'scope>) {
-        println!("[{}] queue::push({:?})", get_thread_id(), t);
         let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr(_pin);
         loop {
@@ -124,13 +123,6 @@ where
                 let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                 match res {
                     Ok(()) => {
-                        if DEBUG_PRINT {
-                            println!(
-                                "[{}] Adding node as garbage: {:x}",
-                                get_thread_id(),
-                                head.data
-                            );
-                        }
                         _pin.add_garbage(head.into_owned());
                         Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                     }
@@ -158,13 +150,6 @@ where
                         let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                         match res {
                             Ok(()) => {
-                                if DEBUG_PRINT {
-                                    println!(
-                                        "[{}] Adding node as garbage: {:x}",
-                                        get_thread_id(),
-                                        head.data
-                                    );
-                                }
                                 _pin.add_garbage(head.into_owned());
                                 Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
                             }
@@ -207,6 +192,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+
+    use super::super::pin;
 
     #[derive(Debug)]
     struct Payload {
