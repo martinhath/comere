@@ -250,8 +250,9 @@ impl GlobalState {
     }
 
     /// Add a bag of garbage to the global garbage list. The garbage is tagged with the
-    /// epoch that the thread is in.
-    fn add_garbage_bag<'scope>(&self, bag: Bag, epoch: usize, _pin: Pin<'scope>) {
+    /// global epoch.
+    fn add_garbage_bag<'scope>(&self, bag: Bag, _pin: Pin<'scope>) {
+        let epoch = self.epoch.load(Ordering::SeqCst);
         self.garbage.push((epoch, bag), _pin);
     }
 
@@ -270,9 +271,8 @@ impl GlobalState {
             let current_epoch = epoch + 1;
             let thread_id = get_thread_id();
             while let Some((e, mut bag)) =
-                // TODO: reset the 5 to 2 or 3
                 self.garbage.pop_if(
-                    |&(e, _)| current_epoch.saturating_sub(e) >= 5,
+                    |&(e, _)| current_epoch.saturating_sub(e) >= 2,
                     pin,
                 )
             {
@@ -341,7 +341,7 @@ impl LocalState {
                         // TODO: Why is this OK?
                         .unwrap()
                 };
-                GLOBAL.add_garbage_bag(new_bag, e, pin);
+                GLOBAL.add_garbage_bag(new_bag, pin);
             }
         };
     }
