@@ -7,6 +7,9 @@ pub mod nothing;
 #[allow(unused_variables)]
 #[allow(dead_code)]
 pub mod ebr;
+#[allow(unused_variables)]
+#[allow(dead_code)]
+pub mod hp;
 
 pub trait Queue<T> {
     fn new() -> Self;
