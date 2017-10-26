@@ -3,7 +3,7 @@ use super::atomic::{Owned, Atomic, Ptr};
 
 #[derive(Debug)]
 pub struct Node<T> {
-    data: T,
+    pub data: T,
     next: Atomic<Node<T>>,
 }
 
@@ -27,7 +27,7 @@ impl<T> List<T> {
     }
 
     /// Insert into the head of the list
-    pub fn insert(&self, data: T) {
+    pub fn insert(&self, data: T) -> Ptr<Node<T>> {
         let curr_ptr: Ptr<Node<T>> = Owned::new(Node::new(data)).into_ptr();
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
         let mut head = self.head.load(Relaxed);
@@ -36,7 +36,7 @@ impl<T> List<T> {
             let res = self.head.compare_and_set(head, curr_ptr, Release);
             match res {
                 Ok(_) => {
-                    return;
+                    return head;
                 }
                 Err(new_head) => {
                     head = new_head;
@@ -76,6 +76,14 @@ impl<T> List<T> {
                     head_ptr = new_head;
                 }
             }
+        }
+    }
+
+    /// Return an iterator to the list.
+    pub fn iter(&self) -> Iter<T> {
+        Iter {
+            node: self.head.load(SeqCst),
+            _marker: ::std::marker::PhantomData,
         }
     }
 }
@@ -162,5 +170,24 @@ where
             node_ptr = node.next.load(Relaxed);
         }
         false
+    }
+}
+
+/// An iterator for `List`
+pub struct Iter<'a, T: 'a> {
+    node: Ptr<'a, Node<T>>,
+    _marker: ::std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        // TODO: this also needs to use HP!
+        if let Some(node) = unsafe { self.node.as_ref() } {
+            self.node = node.next.load(SeqCst);
+            Some(&node.data)
+        } else {
+            None
+        }
     }
 }
