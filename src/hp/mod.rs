@@ -11,6 +11,11 @@ pub mod list;
 const NUM_HP: usize = 2;
 
 /// Data each thread needs to keep track of the hazard pointers.
+/// Note that we use `usize`; `0` means that the pointer is not set.
+/// We could replace this with eg. `Option<*const T>`, or something like that.
+// TODO: Look into PhantomData, and see if we need it here.
+// An entry should more be able to point to whatever, so maybe not, but we need
+// to check what to do about destructors.
 #[derive(Debug)]
 struct ThreadEntry {
     hazard_pointers: [usize; NUM_HP],
@@ -58,12 +63,17 @@ pub fn scan<T>(ptr: *const T) -> bool {
 
 use std::cell::RefCell;
 thread_local! {
+    /// A thread local pointer to the thread's entry in the global entry list. This pointer
+    /// may be null, but will be set during the first call to `get_entry`.
     static ENTRY_PTR: RefCell<*const list::Node<ThreadEntry>> = {
         RefCell::new(0 as *const list::Node<ThreadEntry>)
     };
 }
 
+/// Get a reference to the current threads entry in the global list. If this entry is not
+/// created yet, create it, and add it to the list.
 fn get_entry() -> &'static mut ThreadEntry {
+    // TODO: fix this implemnetation! This seems very sketchy!
     let p: *mut list::Node<ThreadEntry> = ENTRY_PTR.with(|ptr| if ptr.borrow().is_null() {
         let entry = ThreadEntry { hazard_pointers: [0; NUM_HP] };
         let p = ENTRIES.insert(entry).as_raw();
@@ -72,11 +82,12 @@ fn get_entry() -> &'static mut ThreadEntry {
     } else {
         *ptr.borrow()
     }) as *mut list::Node<ThreadEntry>;
-    // ????
     &mut (unsafe { &mut *p }).data as &'static mut ThreadEntry
 }
 
 lazy_static! {
+    /// The global list of entries. Each thread will register into this list,
+    /// and have a local pointer to its entry.
     static ref ENTRIES: list::List<ThreadEntry> = {
         list::List::new()
     };
@@ -88,10 +99,17 @@ mod test {
     use std::thread::spawn;
 
     #[test]
+    /// Confirm that `get_entry` makes an entry on the initial call,
+    /// and that it does not create multiple entries. Also check that registering
+    /// and deregistering HPs works.
     fn setup() {
         get_entry();
-        let a = spawn(|| { get_entry(); });
-        let b = spawn(|| { get_entry(); });
+        let a = spawn(|| for _ in 0..10 {
+            get_entry();
+        });
+        let b = spawn(|| for _ in 0..10 {
+            get_entry();
+        });
         a.join();
         b.join();
         // Check that entries for all three threads are here

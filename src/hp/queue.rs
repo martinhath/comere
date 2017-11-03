@@ -4,6 +4,9 @@
 
 use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
 use std::default::Default;
+use std::mem::ManuallyDrop;
+
+use super::*;
 
 use super::atomic::{Owned, Atomic, Ptr};
 
@@ -15,18 +18,21 @@ pub struct Queue<T> {
 
 #[derive(Debug)]
 pub struct Node<T> {
-    // TODO: Use `std::mem::ManuallyDrop` instead,
-    // as in `crossbeam-epoch`. This will probably
-    // improve memory usage, which will in order
-    // improve cache behaviour.
-    data: Option<T>,
+    data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
 impl<T> Node<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            data: ManuallyDrop::new(data),
+            next: Default::default(),
+        }
+    }
+
     pub fn empty() -> Self {
         Self {
-            data: None,
+            data: unsafe { ::std::mem::uninitialized() },
             next: Default::default(),
         }
     }
@@ -34,10 +40,7 @@ impl<T> Node<T> {
 
 impl<T> Queue<T> {
     pub fn new() -> Self {
-        let sentinel = Owned::new(Node {
-            data: None,
-            next: Default::default(),
-        });
+        let sentinel = Owned::new(Node::empty());
         let ptr = sentinel.into_ptr();
         let q = Queue {
             head: Atomic::null(),
@@ -49,13 +52,10 @@ impl<T> Queue<T> {
     }
 
     pub fn push(&self, t: T) {
-        let node = Owned::new(Node {
-            data: Some(t),
-            next: Default::default(),
-        });
+        let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr();
         loop {
-            let tail = self.tail.load(Acquire);
+            let tail: Ptr<Node<T>> = self.tail.load(Acquire);
             let t = unsafe { tail.deref() };
             let next = t.next.load(Acquire);
             if unsafe { next.as_ref().is_some() } {
@@ -82,6 +82,8 @@ impl<T> Queue<T> {
         let head: Ptr<Node<T>> = self.head.load(Acquire);
         let h: &Node<T> = unsafe { head.deref() };
         let next: Ptr<Node<T>> = h.next.load(Acquire);
+        // Register the `next` pointer as hazardous
+        assert!(register_hp(next.as_raw()));
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
                 // NOTE(martin): We don't really return the correct node here:
@@ -92,10 +94,26 @@ impl<T> Queue<T> {
                 //
                 // This is where we leak memory: when we CAS out `head`,
                 // it is no longer reachable by the queue.
-                self.head
-                    .compare_and_set(head, next, Release)
-                    .ok()
-                    .and_then(|_| ::std::ptr::read(&node.data))
+                let res = self.head.compare_and_set(head, next, SeqCst);
+                match res {
+                    Ok(()) => {
+                        // We are now done reading the pointer. Deregister.
+                        assert!(deregister_hp(next.as_raw()));
+                        let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
+                        // Dropping an `Owned` frees the memory created in `push`.
+                        // Thus, if we do not drop it, we should leak memory.
+                        //
+                        // TODO(03.11.17): check how retiring HP works
+                        let head: Owned<Node<T>> = head.into_owned();
+                        ::std::mem::forget(head);
+                        // TODO: the leak didn't show up in valgrind, but `Owned::drop` was never
+                        // called, and `htop` showed an increasing memory usage. Find out why?
+                        ret
+                    }
+                    // TODO: we would rather want to loop here, instead of
+                    // giving up if there is contention?
+                    Err(e) => None,
+                }
             },
             None => None,
         }
@@ -192,14 +210,241 @@ mod test {
         }
     }
 
-    // This test confirms that the queue leaks memory.
+    #[derive(Debug)]
+    struct NoDrop;
+    impl Drop for NoDrop {
+        fn drop(&mut self) {
+            panic!("did drop!");
+        }
+    }
+
+    #[test]
+    fn no_drop() {
+        let q = Queue::new();
+        let iters = 1024 * 1024;
+        for i in 0..iters {
+            q.push(NoDrop);
+            let r = q.pop().unwrap();
+            ::std::mem::forget(r);
+        }
+        // NoDrop panics on drop, so if we get here, it's good.
+    }
+
+    #[derive(Debug)]
+    struct SingleDrop(bool);
+    impl Drop for SingleDrop {
+        fn drop(&mut self) {
+            if (self.0) {
+                panic!("Dropped before!");
+            }
+            self.0 = true;
+        }
+    }
+
+    #[test]
+    fn single_drop() {
+        let q = Queue::new();
+        let iters = 1024 * 1024;
+        for i in 0..iters {
+            q.push(SingleDrop(false));
+            q.pop();
+        }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Debug)]
+    struct MustDrop<'a>(&'a AtomicUsize);
+
+    impl<'a> Drop for MustDrop<'a> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    lazy_static! {
+        static ref AtomicCount: AtomicUsize = {
+            AtomicUsize::new(0)
+        };
+    }
+
+    #[test]
+    fn do_drop() {
+        let q = Queue::new();
+        let iters = 1024 * 1024;
+        for i in 0..iters {
+            let q = &q;
+            q.push(MustDrop(&AtomicCount));
+            q.pop();
+        }
+        assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
+    }
+
+
+    use std::thread::spawn;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    #[test]
+    fn is_unique_receiver() {
+        const N_THREADS: usize = 16;
+        const ELEMS: usize = 512 * 512;
+
+        let q = Arc::new(Queue::new());
+        // Markers to check.
+        let markers = Arc::new(
+            (0..ELEMS)
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        );
+        // Fill the queue with all numbers
+        for i in 0..ELEMS {
+            q.push(i);
+        }
+
+        // Each threads pops something until the queue is empty,
+        // and CASes the element they got back in `markers`.
+        // If any CAS fails, we've returned the same element to two
+        // threads, which should not happen, since all nubmers are only
+        // once in the queue.
+        let threads = (0..N_THREADS)
+            .map(|i| {
+                let markers = markers.clone();
+                let q = q.clone();
+                spawn(move || while let Some(i) = q.pop() {
+                    let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                    assert_eq!(ret, false);
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Wait for all threads to finish
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+
+        // Check that all elements were returned from the queue
+        for m in markers.iter() {
+            assert!(m.load(Ordering::SeqCst));
+        }
+    }
+
     // #[test]
-    // fn memory_usage() {
-    //     let mut q: Queue<LargeStruct> = Queue::new();
-    //     // This will leak
-    //     for i in 0..(1024 * 1024) {
-    //         q.push(LargeStruct::new());
-    //         q.pop();
+    // fn is_unique_receiver_if() {
+    //     const N_THREADS: usize = 16;
+    //     const ELEMS: usize = 512 * 512;
+
+    //     let q = Arc::new(Queue::new());
+    //     // Markers to check.
+    //     let markers = Arc::new(
+    //         (0..ELEMS)
+    //             .map(|_| AtomicBool::new(false))
+    //             .collect::<Vec<_>>(),
+    //     );
+    //     // Fill the queue with all numbers
+    //     for i in 0..ELEMS {
+    //         q.push(i);
+    //     }
+
+    //     // Each threads pops something until the queue is empty,
+    //     // and CASes the element they got back in `markers`.
+    //     // If any CAS fails, we've returned the same element to two
+    //     // threads, which should not happen, since all nubmers are only
+    //     // once in the queue.
+    //     let threads = (0..N_THREADS)
+    //         .map(|i| {
+    //             let markers = markers.clone();
+    //             let q = q.clone();
+    //             spawn(move || {
+    //                 while let Some(i) = q.pop_if(|_| true) {
+    //                     let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+    //                     assert_eq!(ret, false);
+    //                 }
+    //             })
+    //         })
+    //         .collect::<Vec<_>>();
+
+    //     // Wait for all threads to finish
+    //     for t in threads.into_iter() {
+    //         assert!(t.join().is_ok());
+    //     }
+
+    //     // Check that all elements were returned from the queue
+    //     for m in markers.iter() {
+    //         assert!(m.load(Ordering::SeqCst));
     //     }
     // }
+
+    #[test]
+    fn stress_test() {
+        const N_THREADS: usize = 16;
+        const N: usize = 1024 * 1024 * 32;
+
+        // NOTE: we can replace the arc problems by using crossbeams's `scope`,
+        // instead of `thread::spawn`.
+        let source = Arc::new(Queue::new());
+        let sink = Arc::new(Queue::new());
+
+        // Pre-fill the source with stuff
+        for n in 0..N {
+            source.push(n);
+        }
+
+        let threads = (0..N_THREADS)
+            .map(|thread_id| {
+                let source = source.clone();
+                let sink = sink.clone();
+                spawn(move || {
+                    let source = source;
+                    let sink = sink;
+
+                    // Move stuff from source to sink
+                    while let Some(i) = source.pop() {
+                        sink.push(i);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+        let mut v = Vec::with_capacity(N);
+        while let Some(i) = sink.pop() {
+            v.push(i);
+        }
+        v.sort();
+        for (i, n) in v.into_iter().enumerate() {
+            assert_eq!(i, n);
+        }
+    }
+
+    #[test]
+    fn pop_if_push() {
+        const N_THREADS: usize = 16;
+        const N: usize = 1024 * 1024;
+
+        let q = Arc::new(Queue::new());
+
+        let threads = (0..N_THREADS)
+            .map(|thread_id| {
+                let q = q.clone();
+                spawn(move || {
+                    let push = thread_id % 2 == 0;
+
+                    if push {
+                        q.push(thread_id);
+                    } else {
+                        if let Some(i) = q.pop() {
+                            // register
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+    }
 }
