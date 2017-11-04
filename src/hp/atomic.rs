@@ -787,6 +787,12 @@ pub struct Ptr<'scope, T: 'scope> {
     _marker: PhantomData<(&'scope (), *const T)>,
 }
 
+impl<'scope, T> PartialEq for Ptr<'scope, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
 unsafe impl<'scope, T: Send> Send for Ptr<'scope, T> {}
 
 impl<'scope, T> Clone for Ptr<'scope, T> {

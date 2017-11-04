@@ -80,10 +80,28 @@ impl<T> Queue<T> {
 
     pub fn pop(&self) -> Option<T> {
         let head: Ptr<Node<T>> = self.head.load(Acquire);
+        let hp = head.as_raw();
+        let handle = register_hp(hp);
+        assert!(handle.is_some());
+        // validate:
+        {
+            let new_head: Ptr<Node<T>> = self.head.load(Acquire);
+            // If head changed after registering, restart.
+            if head != new_head {
+                return self.pop();
+            }
+        }
         let h: &Node<T> = unsafe { head.deref() };
         let next: Ptr<Node<T>> = h.next.load(Acquire);
+        let next_hp = next.as_raw();
+        let next_handle = register_hp(next_hp);
+        assert!(next_handle.is_some());
+        {
+            if h.next.load(Acquire) != next {
+                return self.pop();
+            }
+        }
         // Register the `next` pointer as hazardous
-        assert!(register_hp(next.as_raw()));
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
                 // NOTE(martin): We don't really return the correct node here:
@@ -97,15 +115,16 @@ impl<T> Queue<T> {
                 let res = self.head.compare_and_set(head, next, SeqCst);
                 match res {
                     Ok(()) => {
-                        // We are now done reading the pointer. Deregister.
-                        assert!(deregister_hp(next.as_raw()));
                         let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
-                        // Dropping an `Owned` frees the memory created in `push`.
-                        // Thus, if we do not drop it, we should leak memory.
-                        //
-                        // TODO(03.11.17): check how retiring HP works
-                        let head: Owned<Node<T>> = head.into_owned();
-                        ::std::mem::forget(head);
+                        ::std::mem::drop(next_handle);
+                        ::std::mem::drop(handle);
+                        // While someone is using the head pointer, keep it here.
+                        while scan(hp) {
+                            ::std::thread::yield_now();
+                        }
+                        // Drop it when we can; `head` is no longer reachable.
+                        ::std::mem::drop(head.to_owned());
+
                         // TODO: the leak didn't show up in valgrind, but `Owned::drop` was never
                         // called, and `htop` showed an increasing memory usage. Find out why?
                         ret
@@ -378,7 +397,7 @@ mod test {
     #[test]
     fn stress_test() {
         const N_THREADS: usize = 16;
-        const N: usize = 1024 * 1024 * 32;
+        const N: usize = 128; //1024 * 1024;
 
         // NOTE: we can replace the arc problems by using crossbeams's `scope`,
         // instead of `thread::spawn`.
@@ -395,6 +414,7 @@ mod test {
                 let source = source.clone();
                 let sink = sink.clone();
                 spawn(move || {
+                    register_thread(thread_id);
                     let source = source;
                     let sink = sink;
 
@@ -402,6 +422,7 @@ mod test {
                     while let Some(i) = source.pop() {
                         sink.push(i);
                     }
+                    println!("END {:?}", get_thread_id());
                 })
             })
             .collect::<Vec<_>>();

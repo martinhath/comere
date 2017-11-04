@@ -19,6 +19,10 @@ impl<T> Node<T> {
             next: Atomic::null(),
         }
     }
+
+    fn data_ptr(&self) -> Ptr<T> {
+        Ptr::from_raw(&self.data as *const T)
+    }
 }
 
 impl<T> List<T> {
@@ -27,8 +31,13 @@ impl<T> List<T> {
     }
 
     /// Insert into the head of the list
-    pub fn insert(&self, data: T) -> Ptr<Node<T>> {
-        let curr_ptr: Ptr<Node<T>> = Owned::new(Node::new(data)).into_ptr();
+    pub fn insert(&self, data: T) -> Ptr<T> {
+        let node = Node::new(data);
+        let curr_ptr: Ptr<Node<T>> = Owned::new(node).into_ptr();
+        let data_ptr: Ptr<T> = {
+            let node: &Node<T> = unsafe { curr_ptr.deref() };
+            Ptr::from_raw(node.data_ptr().as_raw())
+        };
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
         let mut head = self.head.load(Relaxed);
         loop {
@@ -36,7 +45,7 @@ impl<T> List<T> {
             let res = self.head.compare_and_set(head, curr_ptr, Release);
             match res {
                 Ok(_) => {
-                    return head;
+                    return data_ptr;
                 }
                 Err(new_head) => {
                     head = new_head;
