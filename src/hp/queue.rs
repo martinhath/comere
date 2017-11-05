@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
 use std::default::Default;
-use std::mem::ManuallyDrop;
+use std::mem::{ManuallyDrop, drop};
 
 use super::*;
 
@@ -56,6 +56,13 @@ impl<T> Queue<T> {
         let new_node = node.into_ptr();
         loop {
             let tail: Ptr<Node<T>> = self.tail.load(Acquire);
+            let tail_hp = register_hp(tail.as_raw());
+            {
+                if self.tail.load(Acquire) != tail {
+                    drop(tail_hp);
+                    continue;
+                }
+            }
             let t = unsafe { tail.deref() };
             let next = t.next.load(Acquire);
             if unsafe { next.as_ref().is_some() } {
@@ -80,26 +87,22 @@ impl<T> Queue<T> {
 
     pub fn pop(&self) -> Option<T> {
         let head: Ptr<Node<T>> = self.head.load(Acquire);
-        let hp = head.as_raw();
-        let handle = register_hp(hp);
-        assert!(handle.is_some());
+        let head_hp = register_hp(head.as_raw()).expect("Failed to register HP");
         // validate:
         {
             let new_head: Ptr<Node<T>> = self.head.load(Acquire);
             // If head changed after registering, restart.
             if head != new_head {
-                handle.unwrap().free();
+                drop(head_hp);
                 return self.pop();
             }
         }
         let h: &Node<T> = unsafe { head.deref() };
         let next: Ptr<Node<T>> = h.next.load(Acquire);
-        let next_hp = next.as_raw();
-        let next_handle = register_hp(next_hp);
-        assert!(next_handle.is_some());
+        let next_hp = register_hp(next.as_raw()).expect("Failed to register HP");
         {
             if h.next.load(Acquire) != next {
-                next_handle.unwrap().free();
+                drop(next_hp);
                 return self.pop();
             }
         }
@@ -111,24 +114,18 @@ impl<T> Queue<T> {
                 // node the new sentinel node, but return the data of `node`,
                 // instead of `head`. In other words, the data we return
                 // belongs on the node that is the new sentinel node.
-                //
-                // This is where we leak memory: when we CAS out `head`,
-                // it is no longer reachable by the queue.
                 let res = self.head.compare_and_set(head, next, SeqCst);
                 match res {
                     Ok(()) => {
                         let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
-                        ::std::mem::drop(next_handle);
-                        ::std::mem::drop(handle);
+                        drop(next_hp);
+                        drop(head_hp);
                         // While someone is using the head pointer, keep it here.
-                        while scan(hp) {
+                        while scan(head.as_raw()) {
                             ::std::thread::yield_now();
                         }
                         // Drop it when we can; `head` is no longer reachable.
                         ::std::mem::drop(head.to_owned());
-
-                        // TODO: the leak didn't show up in valgrind, but `Owned::drop` was never
-                        // called, and `htop` showed an increasing memory usage. Find out why?
                         ret
                     }
                     // TODO: we would rather want to loop here, instead of
@@ -399,7 +396,7 @@ mod test {
     #[test]
     fn stress_test() {
         const N_THREADS: usize = 16;
-        const N: usize = 128; //1024 * 1024;
+        const N: usize = 1024 * 1024;
 
         // NOTE: we can replace the arc problems by using crossbeams's `scope`,
         // instead of `thread::spawn`.

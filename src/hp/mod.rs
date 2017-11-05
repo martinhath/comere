@@ -47,7 +47,6 @@ impl HazardHandle {
     fn new<T>(ptr: *const T) -> Self {
         Self { ptr: ptr as *const () }
     }
-    fn free(self) {}
 }
 
 impl Drop for HazardHandle {
