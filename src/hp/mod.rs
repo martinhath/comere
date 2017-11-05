@@ -24,14 +24,18 @@ struct ThreadEntry {
 
 impl ThreadEntry {
     fn new(id: usize) -> Self {
-        let mut entry = Self {
-            hazard_pointers: unsafe { ::std::mem::uninitialized() },
-            id,
-        };
-        for i in 0..NUM_HP {
-            entry.hazard_pointers[i] = AtomicUsize::new(0);
+        unsafe {
+            // We get uninitialized memory, and initialize it with ptr::write.
+            let mut entry = Self {
+                hazard_pointers: ::std::mem::uninitialized(),
+                id,
+            };
+            use std::ptr::write;
+            for i in 0..NUM_HP {
+                write(&mut entry.hazard_pointers[i], AtomicUsize::new(0));
+            }
+            entry
         }
-        entry
     }
 }
 
@@ -41,8 +45,9 @@ pub struct HazardHandle {
 
 impl HazardHandle {
     fn new<T>(ptr: *const T) -> Self {
-        Self { ptr: ptr as *const ()}
+        Self { ptr: ptr as *const () }
     }
+    fn free(self) {}
 }
 
 impl Drop for HazardHandle {
@@ -54,16 +59,13 @@ impl Drop for HazardHandle {
 /// Register the given pointer as a hazzard pointer.
 /// Return `true` if we succeed, `false` if not.
 pub fn register_hp<T>(ptr: *const T) -> Option<HazardHandle> {
-    // println!("registering {:p}", ptr);
-    let entry = &mut *get_entry();
+    let entry: &mut ThreadEntry = get_entry();
     entry.id = get_thread_id();
     for i in 0..NUM_HP {
         let hp = entry.hazard_pointers[i].load(SeqCst);
         if hp == 0 {
             entry.hazard_pointers[i].store(ptr as usize, SeqCst);
             return Some(HazardHandle::new(ptr));
-        } else {
-            // println!("  hp was {:x}", hp);
         }
     }
     None
@@ -72,16 +74,13 @@ pub fn register_hp<T>(ptr: *const T) -> Option<HazardHandle> {
 /// Deregister the given pointer as a hazzard pointer.
 /// Return `true` if we succeed, `false` if not.
 fn deregister_hp<T>(ptr: *const T) -> bool {
-    // println!("deregistering {:p}", ptr);
     let ptr = ptr as usize;
-    let entry = &mut *get_entry();
+    let entry: &mut ThreadEntry = get_entry();
     for i in 0..NUM_HP {
         let hp = entry.hazard_pointers[i].load(SeqCst);
         if hp == ptr {
             entry.hazard_pointers[i].store(0, SeqCst);
             return true;
-        } else {
-            // println!("  hp was {:x}", hp);
         }
     }
     false
@@ -93,7 +92,6 @@ pub fn scan<T>(ptr: *const T) -> bool {
     for e in ENTRIES.iter() {
         for p in e.hazard_pointers.iter() {
             if ptr == p.load(SeqCst) {
-                println!("[{}] thread {} has hp {:x}", get_thread_id(), e.id, ptr);
                 return true;
             }
         }

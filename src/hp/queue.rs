@@ -88,6 +88,7 @@ impl<T> Queue<T> {
             let new_head: Ptr<Node<T>> = self.head.load(Acquire);
             // If head changed after registering, restart.
             if head != new_head {
+                handle.unwrap().free();
                 return self.pop();
             }
         }
@@ -98,6 +99,7 @@ impl<T> Queue<T> {
         assert!(next_handle.is_some());
         {
             if h.next.load(Acquire) != next {
+                next_handle.unwrap().free();
                 return self.pop();
             }
         }
@@ -253,7 +255,7 @@ mod test {
     struct SingleDrop(bool);
     impl Drop for SingleDrop {
         fn drop(&mut self) {
-            if (self.0) {
+            if self.0 {
                 panic!("Dropped before!");
             }
             self.0 = true;
@@ -422,7 +424,6 @@ mod test {
                     while let Some(i) = source.pop() {
                         sink.push(i);
                     }
-                    println!("END {:?}", get_thread_id());
                 })
             })
             .collect::<Vec<_>>();
