@@ -1,5 +1,15 @@
+#![feature(alloc_system, global_allocator, allocator_api)]
+extern crate alloc_system;
+use alloc_system::System;
+#[global_allocator]
+static A: System = System;
+
+
 #[macro_use]
 extern crate lazy_static;
+
+#[cfg(test)]
+extern crate rand;
 
 #[allow(unused_variables)]
 #[allow(dead_code)]
