@@ -441,3 +441,14 @@ where
     marker.unpin();
     ret
 }
+
+mod bench {
+    extern crate test;
+
+    use super::*;
+
+    #[bench]
+    fn pin(b: &mut test::Bencher) {
+        b.iter(|| { super::pin(|pin| {}); });
+    }
+}

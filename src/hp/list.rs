@@ -378,3 +378,28 @@ mod test {
         }
     }
 }
+mod bench {
+    extern crate test;
+
+    use super::*;
+
+    #[bench]
+    fn insert(b: &mut test::Bencher) {
+        let list = List::new();
+        b.iter(|| {
+            list.insert(0usize);
+        })
+    }
+
+    #[bench]
+    fn remove_front(b: &mut test::Bencher) {
+        const N: usize = 1024 * 1024;
+        let list = List::new();
+        for i in 0..N {
+            list.insert(i);
+        }
+        b.iter(|| {
+            list.remove_front();
+        });
+    }
+}

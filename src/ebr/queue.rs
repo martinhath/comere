@@ -526,3 +526,16 @@ mod test {
         }
     }
 }
+
+mod bench {
+    extern crate test;
+
+    use super::*;
+    use ebr::pin;
+
+    #[bench]
+    fn push(b: &mut test::Bencher) {
+        let q = Queue::new();
+        b.iter(|| { pin(|pin| { q.push(1, pin); }); });
+    }
+}
