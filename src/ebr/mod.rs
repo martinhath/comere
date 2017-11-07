@@ -162,7 +162,7 @@ impl Garbage {
         // Note that this closure is never actually called, but the destructors are ran when the
         // closure is dropped.
         let d = t.data;
-        Garbage(Box::new(move || { ::std::mem::drop(t); }))
+        Garbage(Box::new(move || { ::std::mem::forget(t); }))
     }
 }
 
@@ -170,6 +170,7 @@ impl Garbage {
 impl ::std::fmt::Debug for Garbage {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
         use std::fmt::Pointer;
+        // TODO(7.11.17): use `debug_struct` ?
         fmt.write_str("Garbage { fn: ")?;
         self.0.fmt(fmt)?;
         fmt.write_str(" }")
@@ -231,13 +232,12 @@ impl GlobalState {
     /// less than the global epoch, we cannot increment the epoch.
     fn can_increment_epoch(&self) -> bool {
         let global_epoch = self.epoch.load(Ordering::SeqCst);
-        // We don't need to worry about the list changing as we walk through it:
-        // if we see an unpinned element, and it changes, it means that the thread
-        // read the new epoch, so thats OK. If we see a pinned element, in the
-        // worst case the thread may unpin and pin again, and then know the latest
-        // epoch, but we're only seing that it has read a stale one. In this case,
-        // we return false, even though we could have returned true, which is
-        // not so bad.
+        // We don't need to worry about the list changing as we walk through it: if we see an
+        // unpinned element, and it changes, it means that the thread read the new epoch, so thats
+        // OK. If we see a pinned element, in the worst case the thread may unpin and pin again,
+        // and then know the latest epoch, but we're only seing that it has read a stale one. In
+        // this case, we return false, even though we could have returned true, which is not so
+        // bad.
         pin(|_pin| {
             self.pins.all(
                 |n| {
@@ -249,17 +249,19 @@ impl GlobalState {
         })
     }
 
-    /// Add a bag of garbage to the global garbage list. The garbage is tagged with the
-    /// global epoch.
+    /// Add a bag of garbage to the global garbage list. The garbage is tagged with the global
+    /// epoch.
     fn add_garbage_bag<'scope>(&self, bag: Bag, _pin: Pin<'scope>) {
         let epoch = self.epoch.load(Ordering::SeqCst);
         self.garbage.push((epoch, bag), _pin);
     }
 
-    /// Increments the current epoch and puts all garbage in the safe-to-free
-    /// garbare queue.
+    /// Increments the current epoch and puts all garbage in the safe-to-free garbare queue.
     fn increment_epoch<'scope>(&self, pin: Pin<'scope>) {
         let epoch = self.epoch.load(Ordering::SeqCst);
+        // Try to increment the epoch.
+        // We are using `cas` instead of `fech_add`, since we would like to make sure that the
+        // epoch is only once, and that the thread which increments it needs to know that it did.
         let ret = self.epoch.compare_and_swap(
             epoch,
             epoch + 1,
@@ -267,32 +269,31 @@ impl GlobalState {
         );
         if ret == epoch {
             // This is a critical section, since this thread is pinned, and has not registered
-            // that we've read the newly incremented epoch.
+            // that we've read the newly incremented epoch. Hence, other threads only see that we
+            // have seen epoch `epoch`.
             let current_epoch = epoch + 1;
             let thread_id = get_thread_id();
             while let Some((e, mut bag)) =
                 self.garbage.pop_if(
-                    |&(e, _)| current_epoch.saturating_sub(e) >= 2,
+                    |&(e, _)| current_epoch.saturating_sub(e) >= 3,
                     pin,
                 )
             {
-                // Since we've popped the bag from the queue,
-                // this thread is the only thread accessing the bag.
-                // This isn't true in general, since `pop_if` accesses
-                // the bag, and can read whatever it wants.
-                // However, we only use `pop_if` in one place, and that
-                // place only reads the `epoch` field.
+                // Since we've popped the bag from the queue, this thread is the only thread
+                // accessing the bag. This isn't true in general, since `pop_if` accesses the bag,
+                // and can read whatever it wants. However, we only use `pop_if` in one place, and
+                // that place only reads the `epoch` field.
                 for i in 0..bag.index {
-                    let garbage = bag.data[i].take();
-                    if garbage.is_none() {
+                    if let Some(garbage) = bag.data[i].take() {
+                        // This is where we free the memory of the nodes the data strucutres make.
+                        // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`, or
+                        // it is `queue::Node<Bag>`, if it is the list we use for reclamation.
+                        ::std::mem::drop(garbage);
+                    } else {
                         break;
                     }
-                    let garbage: Garbage = garbage.unwrap();
-                    // This is where we free the memory of the nodes the data strucutres make.
-                    // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`,
-                    // or `it is Node<Bag>`, if it is the list we use for reclamation.
-                    ::std::mem::drop(garbage);
                 }
+                // assert that all bags are empty. Then dropping the bag is a noop.
                 bag.drop();
             }
         }
@@ -330,17 +331,12 @@ impl LocalState {
         match self.garbage_bag.try_insert(g) {
             Ok(()) => {}
             Err(o) => {
+                // The current bag is full. `swap` it with a new one, and push the full bag onto
+                // the global list of deferred garbage.
                 let mut new_bag = Bag::new();
                 let res = new_bag.try_insert(o);
                 assert!(res.is_ok());
                 ::std::mem::swap(&mut self.garbage_bag, &mut new_bag);
-                let e = unsafe {
-                    self.thread_pin
-                        .as_ref()
-                        .map(|n| n.data.epoch(Ordering::SeqCst))
-                        // TODO: Why is this OK?
-                        .unwrap()
-                };
                 GLOBAL.add_garbage_bag(new_bag, pin);
             }
         };

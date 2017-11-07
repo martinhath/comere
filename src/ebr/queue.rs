@@ -17,6 +17,32 @@ pub struct Queue<T> {
     tail: Atomic<Node<T>>,
 }
 
+impl<T> Drop for Queue<T> {
+    // TODO: find out what happens if we share the queue between threads. Is it possible that the
+    // threads is dropped in multiple threads? Also, if we drop the queue when other threads are
+    // reading the stuff, we should add the nodes to garbage. However, we also need to drop the
+    // data. What to do?
+    fn drop(&mut self) {
+        unsafe {
+            let pin = Pin::fake();
+            let mut ptr = self.head.load(SeqCst, pin);
+            // The first node has no valid data - this is already returned by `pop`, and if nothing
+            // is popped it is uninitialized data.
+            let node = ptr.into_owned();
+            let next = node.next.load(SeqCst, pin);
+            ::std::mem::drop(node);
+            ptr = next;
+            while !ptr.is_null() {
+                let mut node = ptr.into_owned();
+                let next = node.next.load(SeqCst, pin);
+                ManuallyDrop::drop(node.data_mut());
+                ::std::mem::drop(node);
+                ptr = next;
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Node<T> {
     // We don't want to drop the data of the node when we drop the node itself; dropping the data
@@ -38,6 +64,10 @@ impl<T> Node<T> {
             data: unsafe { ::std::mem::uninitialized() },
             next: Default::default(),
         }
+    }
+
+    fn data_mut(&mut self) -> &mut ManuallyDrop<T> {
+        &mut self.data
     }
 }
 
@@ -133,6 +163,8 @@ where
         }
     }
 
+    /// Pop the first element of the queue if `F(head)` evaluates
+    /// to `true`.
     pub fn pop_if<'scope, F>(&self, f: F, _pin: Pin<'scope>) -> Option<T>
     where
         F: Fn(&T) -> bool,
@@ -142,16 +174,14 @@ where
         let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => {
-                // This `unwrap` is alright, since we know that only
-                // the sentinel node, `head` here, is the only node
-                // with `data = None`.
-                if f(&node.data) {
+                let data = unsafe { ::std::ptr::read(&node.data) };
+                if f(&*data) {
                     unsafe {
                         let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                         match res {
                             Ok(()) => {
                                 _pin.add_garbage(head.into_owned());
-                                Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
+                                Some(ManuallyDrop::into_inner(data))
                             }
                             Err(e) => None,
                         }
@@ -365,7 +395,7 @@ mod test {
     #[test]
     fn is_unique_receiver() {
         const N_THREADS: usize = 16;
-        const ELEMS: usize = 512 * 512;
+        const ELEMS: usize = 1024 * 512;
 
         let q = Arc::new(Queue::new());
         // Markers to check.
@@ -409,7 +439,7 @@ mod test {
     #[test]
     fn is_unique_receiver_if() {
         const N_THREADS: usize = 16;
-        const ELEMS: usize = 512 * 512;
+        const ELEMS: usize = 1024 * 512;
 
         let q = Arc::new(Queue::new());
         // Markers to check.
@@ -530,12 +560,11 @@ mod test {
 mod bench {
     extern crate test;
 
-    use super::*;
-    use ebr::pin;
+    use super::Queue;
 
     #[bench]
     fn push(b: &mut test::Bencher) {
         let q = Queue::new();
-        b.iter(|| { pin(|pin| { q.push(1, pin); }); });
+        b.iter(|| { ::ebr::pin(|pin| { q.push(1, pin); }); });
     }
 }
