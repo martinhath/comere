@@ -121,10 +121,9 @@ where
         let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
         match unsafe { next.as_ref() } {
             Some(node) => unsafe {
-                // NOTE(martin): We don't really return the correct node here:
-                // we CAS the old sentinel node out, and make the first data
-                // node the new sentinel node, but return the data of `node`,
-                // instead of `head`. In other words, the data we return
+                // NOTE(martin): We don't really return the correct node here: we CAS the old
+                // sentinel node out, and make the first data node the new sentinel node, but
+                // return the data of `node`, instead of `head`. In other words, the data we return
                 // belongs on the node that is the new sentinel node.
                 //
                 // Before:
@@ -145,16 +144,17 @@ where
                 //     |  xx |-->|  93 |-->|  5  |---|
                 //     !-----!   !-----!   !-----!
                 //
-                // Remember that the first node is the sentinel node,
-                // so its data isn't really in the queue.
+                // Remember that the first node is the sentinel node, so its data isn't really in
+                // the queue.
                 //
-                // This is where we leak memory: when we CAS out `head`,
-                // it is no longer reachable by the queue.
+                // This is where we leak memory: when we CAS out `head`, it is no longer reachable
+                // by the queue.
                 let res = self.head.compare_and_set(head, next, SeqCst, _pin);
                 match res {
                     Ok(()) => {
+                        let data = ::std::ptr::read(&node.data);
                         _pin.add_garbage(head.into_owned());
-                        Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)))
+                        Some(ManuallyDrop::into_inner(data))
                     }
                     Err(e) => None,
                 }
