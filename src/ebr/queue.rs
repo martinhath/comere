@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Relaxed, Acquire, SeqCst};
 use std::default::Default;
 use std::mem::ManuallyDrop;
 
-use super::{Pin, get_thread_id};
+use super::{Pin};
 
 use super::atomic::{Owned, Atomic, Ptr};
 
@@ -238,11 +238,13 @@ mod test {
 
     #[test]
     fn can_construct_queue() {
+        super::super::register_thread(1);
         pin(|pin| { let q: Queue<Payload> = Queue::new(); });
     }
 
     #[test]
     fn st_queue_push() {
+        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<Payload> = Queue::new();
             q.push(Payload::new(), pin);
@@ -253,6 +255,7 @@ mod test {
 
     #[test]
     fn st_queue_push_pop() {
+        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<u32> = Queue::new();
             q.push(1, pin);
@@ -264,6 +267,7 @@ mod test {
 
     #[test]
     fn st_queue_push_pop_many() {
+        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<u32> = Queue::new();
             for i in 0..100 {
@@ -278,6 +282,7 @@ mod test {
 
     #[test]
     fn st_queue_len() {
+        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<Payload> = Queue::new();
             for i in 0..10 {
@@ -286,31 +291,6 @@ mod test {
             assert_eq!(q.len(pin), 10);
         });
     }
-
-    // struct LargeStruct {
-    //     b: [u8; 1024 * 4],
-    //     c: String,
-    // }
-
-    // impl LargeStruct {
-    //     fn new() -> Self {
-    //         Self {
-    //             b: [0; 1024 * 4],
-    //             c: "asd".to_string(),
-    //         }
-    //     }
-    // }
-
-    // #[test]
-    // fn memory_usage() {
-    //     let mut q: Queue<LargeStruct> = Queue::new();
-    //     for i in 0..(1024 * 1024) {
-    //         pin(|pin| {
-    //             q.push(LargeStruct::new(), pin);
-    //             q.pop(pin);
-    //         })
-    //     }
-    // }
 
     #[derive(Debug)]
     struct NoDrop;
@@ -322,6 +302,7 @@ mod test {
 
     #[test]
     fn no_drop() {
+        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
@@ -337,7 +318,7 @@ mod test {
     struct SingleDrop(bool);
     impl Drop for SingleDrop {
         fn drop(&mut self) {
-            if (self.0) {
+            if self.0 {
                 panic!("Dropped before!");
             }
             self.0 = true;
@@ -346,6 +327,7 @@ mod test {
 
     #[test]
     fn single_drop() {
+        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
@@ -368,23 +350,24 @@ mod test {
     }
 
     lazy_static! {
-        static ref AtomicCount: AtomicUsize = {
+        static ref ATOMIC_COUNT: AtomicUsize = {
             AtomicUsize::new(0)
         };
     }
 
     #[test]
     fn do_drop() {
+        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
             let q = &q;
             pin(move |pin| {
-                q.push(MustDrop(&AtomicCount), pin);
+                q.push(MustDrop(&ATOMIC_COUNT), pin);
                 q.pop(pin);
             });
         }
-        assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
+        assert_eq!(ATOMIC_COUNT.load(Ordering::SeqCst), iters);
     }
 
 
@@ -394,6 +377,7 @@ mod test {
 
     #[test]
     fn is_unique_receiver() {
+        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const ELEMS: usize = 1024 * 512;
 
@@ -409,18 +393,20 @@ mod test {
             q.push(i, pin);
         });
 
-        // Each threads pops something until the queue is empty,
-        // and CASes the element they got back in `markers`.
-        // If any CAS fails, we've returned the same element to two
-        // threads, which should not happen, since all nubmers are only
-        // once in the queue.
+        // Each threads pops something until the queue is empty, and CASes the element they got
+        // back in `markers`.  If any CAS fails, we've returned the same element to two threads,
+        // which should not happen, since all nubmers are only once in the queue.
         let threads = (0..N_THREADS)
             .map(|i| {
                 let markers = markers.clone();
                 let q = q.clone();
-                spawn(move || while let Some(i) = pin(|pin| q.pop(pin)) {
-                    let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
-                    assert_eq!(ret, false);
+                spawn(move || {
+                    super::super::register_thread(i + 2);
+                    while let Some(i) = pin(|pin| q.pop(pin)) {
+                        assert!(i < ELEMS);
+                        let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                        assert_eq!(ret, false);
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -438,6 +424,7 @@ mod test {
 
     #[test]
     fn is_unique_receiver_if() {
+        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const ELEMS: usize = 1024 * 512;
 
@@ -463,7 +450,7 @@ mod test {
                 let markers = markers.clone();
                 let q = q.clone();
                 spawn(move || {
-                    super::super::register_thread(i);
+                    super::super::register_thread(i + 2);
                     while let Some(i) = pin(|pin| q.pop_if(|_| true, pin)) {
                         let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
                         assert_eq!(ret, false);
@@ -485,6 +472,7 @@ mod test {
 
     #[test]
     fn stress_test() {
+        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const N: usize = 1024 * 1024;
 
@@ -502,7 +490,7 @@ mod test {
                 spawn(move || {
                     let source = source;
                     let sink = sink;
-                    super::super::register_thread(thread_id);
+                    super::super::register_thread(thread_id + 2);
 
                     while let Some(i) = pin(|pin| source.pop(pin)) {
                         pin(|pin| sink.push(i, pin));
@@ -526,6 +514,7 @@ mod test {
 
     #[test]
     fn pop_if_push() {
+        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const N: usize = 1024 * 1024;
 
@@ -535,7 +524,7 @@ mod test {
             .map(|thread_id| {
                 let q = q.clone();
                 spawn(move || {
-                    super::super::register_thread(thread_id);
+                    super::super::register_thread(thread_id + 2);
                     let push = thread_id % 2 == 0;
 
                     pin(|pin| {
@@ -560,11 +549,9 @@ mod test {
 mod bench {
     extern crate test;
 
-    use super::Queue;
-
     #[bench]
     fn push(b: &mut test::Bencher) {
-        let q = Queue::new();
+        let q = super::Queue::new();
         b.iter(|| { ::ebr::pin(|pin| { q.push(1, pin); }); });
     }
 }

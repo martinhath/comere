@@ -99,6 +99,9 @@ impl<T> Queue<T> {
         }
         let h: &Node<T> = unsafe { head.deref() };
         let next: Ptr<Node<T>> = h.next.load(Acquire);
+        if next.is_null() {
+            return None;
+        }
         let next_hp = register_hp(next.as_raw()).expect("Failed to register HP");
         {
             if h.next.load(Acquire) != next {
@@ -281,7 +284,7 @@ mod test {
     }
 
     lazy_static! {
-        static ref AtomicCount: AtomicUsize = {
+        static ref ATOMIC_COUNT: AtomicUsize = {
             AtomicUsize::new(0)
         };
     }
@@ -292,10 +295,10 @@ mod test {
         let iters = 1024 * 1024;
         for i in 0..iters {
             let q = &q;
-            q.push(MustDrop(&AtomicCount));
+            q.push(MustDrop(&ATOMIC_COUNT));
             q.pop();
         }
-        assert_eq!(AtomicCount.load(Ordering::SeqCst), iters);
+        assert_eq!(ATOMIC_COUNT.load(Ordering::SeqCst), iters);
     }
 
 

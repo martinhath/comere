@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use std::mem::drop;
 
 use super::atomic::{Owned, Atomic, Ptr};
-use super::{register_hp, scan};
+use super::{register_hp, scan, HazardHandle};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -143,11 +143,10 @@ where
                 return false;
             }
             let mut current: &Node<T>;
-            let mut prev_handle;
-            let mut curr_handle;
+            let mut prev_handle: Option<HazardHandle> = None;
 
             loop {
-                curr_handle = register_hp(current_ptr.as_raw()).expect("Failed to register HP");
+                let curr_handle = register_hp(current_ptr.as_raw()).expect("Failed to register HP");
                 // validate
                 {
                     if previous_node_ptr.load(SeqCst) != current_ptr {
@@ -181,9 +180,7 @@ where
                             // TODO(6.11.17): have a way to do this in one operation?
                             let addr = curr_handle.get();
                             drop(curr_handle);
-                            while scan(addr) {
-                                // println!("spin {:?}", addr)
-                            }
+                            while scan(addr) {}
                             unsafe {
                                 // Since we have made the node unreachable, and
                                 // no thread has registered it as hazardous, it
@@ -207,22 +204,20 @@ where
                                 // deletion.
                                 panic!("couldn't untag ptr. WTF?");
                             }
-                            // println!("failed CAS. restart.");
                             continue 'outer;
                         }
                     }
                 } else {
                     previous_node_ptr = &current.next;
                     current_ptr = current.next.load(SeqCst).with_tag(0);
-                    prev_handle = curr_handle;
-                    curr_handle = register_hp(current_ptr.as_raw()).expect("Failed to register HP");
+                    prev_handle.take().map(::std::mem::drop);
+                    prev_handle = Some(curr_handle);
 
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
                         return false;
                     }
                 }
-                // println!("end of outer loop: current_ptr={:?} (current.next={:?})", current_ptr, current.next);
             }
         }
     }
@@ -381,25 +376,19 @@ mod test {
 mod bench {
     extern crate test;
 
-    use super::*;
-
     #[bench]
     fn insert(b: &mut test::Bencher) {
-        let list = List::new();
-        b.iter(|| {
-            list.insert(0usize);
-        })
+        let list = super::List::new();
+        b.iter(|| { list.insert(0usize); })
     }
 
     #[bench]
     fn remove_front(b: &mut test::Bencher) {
         const N: usize = 1024 * 1024;
-        let list = List::new();
+        let list = super::List::new();
         for i in 0..N {
             list.insert(i);
         }
-        b.iter(|| {
-            list.remove_front();
-        });
+        b.iter(|| { list.remove_front(); });
     }
 }

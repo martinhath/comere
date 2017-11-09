@@ -107,6 +107,35 @@ where
         }
         true
     }
+
+    /// Return an iterator to the list.
+    pub fn iter<'scope>(&self, pin: Pin<'scope>) -> Iter<'scope, T> {
+        Iter {
+            node: self.head.load(SeqCst, pin),
+            pin: pin,
+            _marker: ::std::marker::PhantomData,
+        }
+    }
+}
+
+/// An iterator for `List`
+pub struct Iter<'scope, T: 'scope> {
+    node: Ptr<'scope, Node<T>>,
+    pin: Pin<'scope>,
+    _marker: ::std::marker::PhantomData<&'scope ()>,
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        // TODO: this also needs to use HP!
+        if let Some(node) = unsafe { self.node.as_ref() } {
+            self.node = node.next.load(SeqCst, self.pin);
+            Some(&node.data)
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> List<T>

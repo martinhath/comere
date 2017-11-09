@@ -91,10 +91,7 @@ impl ThreadPinMarker {
             Ordering::SeqCst,
         ) != current_epoch
         {
-            panic!(
-                "ThreadMarker::pin was called, but the thread is
-                   already pinned!"
-            );
+            panic!("ThreadMarker::pin was called, but the thread is already pinned!");
         }
     }
     /// Unmark the marker as pinned.
@@ -137,8 +134,11 @@ impl ThreadPinMarker {
 /// number of elements, and use them as one unit.
 #[derive(Debug)]
 struct Bag {
+    /// A list of garbage, if present.
     data: [Option<Garbage>; BAG_SIZE],
+    /// The index of the first available slot in `data`.
     index: usize,
+    // TODO: remove these.
     thread: usize,
     count: usize,
 }
@@ -180,15 +180,13 @@ impl ::std::fmt::Debug for Garbage {
 impl Bag {
     /// Make a new empty bag.
     fn new() -> Self {
-        static mut COUNT: usize = 0;
-        unsafe {
-            COUNT += 1;
-        };
+        static mut COUNT: AtomicUsize = AtomicUsize::new(0);
+        let count = unsafe { COUNT.fetch_add(1, Ordering::SeqCst) };
         Self {
             data: Default::default(),
             index: 0,
             thread: get_thread_id(),
-            count: unsafe { COUNT },
+            count,
         }
     }
 
@@ -230,7 +228,7 @@ struct GlobalState {
 impl GlobalState {
     /// Checks that all pinned threads have seen the current epoch. If one threads local epoch is
     /// less than the global epoch, we cannot increment the epoch.
-    fn can_increment_epoch(&self) -> bool {
+    fn can_increment_epoch<'scope>(&self, pin: Pin<'scope>) -> bool {
         let global_epoch = self.epoch.load(Ordering::SeqCst);
         // We don't need to worry about the list changing as we walk through it: if we see an
         // unpinned element, and it changes, it means that the thread read the new epoch, so thats
@@ -238,15 +236,13 @@ impl GlobalState {
         // and then know the latest epoch, but we're only seing that it has read a stale one. In
         // this case, we return false, even though we could have returned true, which is not so
         // bad.
-        pin(|_pin| {
-            self.pins.all(
-                |n| {
-                    let (epoch, pinned) = n.epoch_and_pinned(Ordering::SeqCst);
-                    if pinned { epoch == global_epoch } else { true }
-                },
-                _pin,
-            )
-        })
+        self.pins.all(
+            |n| {
+                let (epoch, pinned) = n.epoch_and_pinned(Ordering::SeqCst);
+                if pinned { epoch == global_epoch } else { true }
+            },
+            pin,
+        )
     }
 
     /// Add a bag of garbage to the global garbage list. The garbage is tagged with the global
@@ -257,8 +253,7 @@ impl GlobalState {
     }
 
     /// Increments the current epoch and puts all garbage in the safe-to-free garbare queue.
-    fn increment_epoch<'scope>(&self, pin: Pin<'scope>) {
-        let epoch = self.epoch.load(Ordering::SeqCst);
+    fn increment_epoch<'scope>(&self, epoch: usize, pin: Pin<'scope>) {
         // Try to increment the epoch.
         // We are using `cas` instead of `fech_add`, since we would like to make sure that the
         // epoch is only once, and that the thread which increments it needs to know that it did.
@@ -275,7 +270,7 @@ impl GlobalState {
             let thread_id = get_thread_id();
             while let Some((e, mut bag)) =
                 self.garbage.pop_if(
-                    |&(e, _)| current_epoch.saturating_sub(e) >= 3,
+                    |&(e, _)| current_epoch.saturating_sub(e) >= 2,
                     pin,
                 )
             {
@@ -335,6 +330,7 @@ impl LocalState {
                 // the global list of deferred garbage.
                 let mut new_bag = Bag::new();
                 let res = new_bag.try_insert(o);
+                // The bag is empty, so this should succeed.
                 assert!(res.is_ok());
                 ::std::mem::swap(&mut self.garbage_bag, &mut new_bag);
                 GLOBAL.add_garbage_bag(new_bag, pin);
@@ -368,7 +364,9 @@ impl<'scope> Pin<'scope> {
     ///
     /// TODO: rename this, and probably mark as `unsafe`.
     pub fn fake() -> Self {
-        Pin { _marker: PhantomData }
+        Pin {
+            _marker: PhantomData,
+        }
     }
 
     /// Add the Owned pointer as garbage. This is the first step in freeing used memory, and it is
@@ -401,7 +399,9 @@ where
     F: FnOnce(Pin<'scope>) -> R,
 {
     // Make the pin
-    let p = Pin { _marker: PhantomData };
+    let p = Pin {
+        _marker: PhantomData,
+    };
 
     // Get the marker, or make it if it is `null`.
     let marker = {
@@ -417,6 +417,10 @@ where
     // Read the global epoch.
     let global_epoch = GLOBAL.epoch.load(Ordering::SeqCst);
 
+    // We must register the pin before eventually incrementing the epoch, since we are using the
+    // pin in there.
+    marker.pin(global_epoch);
+
     // Every once in a while, try to update the global epoch.
     LOCAL_EPOCH.with(|e| {
         let pin_count = {
@@ -427,12 +431,11 @@ where
         // TODO: reset this number to something higher
         // probably also don't use mod, but if we've pinned `n` times
         // without incrementing the epoch, we'll try?
-        if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch() {
-            GLOBAL.increment_epoch(p);
+        if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch(p) {
+            GLOBAL.increment_epoch(global_epoch, p);
         }
     });
 
-    marker.pin(global_epoch);
     let ret = f(p);
     marker.unpin();
     ret
@@ -440,8 +443,6 @@ where
 
 mod bench {
     extern crate test;
-
-    use super::*;
 
     #[bench]
     fn pin(b: &mut test::Bencher) {

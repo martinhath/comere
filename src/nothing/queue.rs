@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 /// A Michael-Scott Queue.
 
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
+use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
 use std::default::Default;
 
 use super::atomic::{Owned, Atomic, Ptr};
@@ -30,6 +30,13 @@ impl<T> Node<T> {
             next: Default::default(),
         }
     }
+
+    fn new(t: T) -> Self {
+        Self {
+            data: Some(t),
+            next: Default::default(),
+        }
+    }
 }
 
 impl<T> Queue<T> {
@@ -46,6 +53,27 @@ impl<T> Queue<T> {
         q.head.store(ptr, Relaxed);
         q.tail.store(ptr, Relaxed);
         q
+    }
+
+    fn enqueue(&self, t: T) {
+        let node = Owned::new(Node::new(t)).into_ptr();
+        let mut tail;
+        loop {
+            tail = self.tail.load(Acquire);
+            let t = unsafe { tail.deref() };
+            let next = t.next.load(Acquire);
+            if tail == self.tail.load(Acquire) {
+                if next.is_null() {
+                    let ret = t.next.compare_and_set(next, node, Release);
+                    if ret.is_ok() {
+                        break;
+                    }
+                } else {
+                    self.tail.compare_and_set(tail, next, Release);
+                }
+            }
+        }
+        self.tail.compare_and_set(tail, node, Release);
     }
 
     pub fn push(&self, t: T) {

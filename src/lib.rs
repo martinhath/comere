@@ -1,4 +1,6 @@
 #![feature(test)]
+// TODO: remove this
+#![feature(const_atomic_usize_new, const_atomic_bool_new)]
 #![feature(alloc_system, global_allocator, allocator_api)]
 extern crate alloc_system;
 use alloc_system::System;
