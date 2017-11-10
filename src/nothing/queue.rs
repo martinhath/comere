@@ -55,6 +55,7 @@ impl<T> Queue<T> {
         q
     }
 
+    // Enqueue, as described by MS. Performs the same as push (on x86).
     fn enqueue(&self, t: T) {
         let node = Owned::new(Node::new(t)).into_ptr();
         let mut tail;
@@ -230,4 +231,24 @@ mod test {
     //         q.pop();
     //     }
     // }
+}
+
+mod bench {
+    extern crate test;
+
+    #[bench]
+    fn queue_push(b: &mut test::Bencher) {
+        let q = super::Queue::new();
+        b.iter(|| {
+            q.push(0);
+        });
+    }
+
+    #[bench]
+    fn queue_enqueue(b: &mut test::Bencher) {
+        let q = super::Queue::new();
+        b.iter(|| {
+            q.enqueue(0);
+        });
+    }
 }
