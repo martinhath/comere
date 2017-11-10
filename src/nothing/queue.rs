@@ -70,11 +70,11 @@ impl<T> Queue<T> {
                         break;
                     }
                 } else {
-                    self.tail.compare_and_set(tail, next, Release);
+                    self.tail.compare_and_set(tail, next, Release).ok();
                 }
             }
         }
-        self.tail.compare_and_set(tail, node, Release);
+        self.tail.compare_and_set(tail, node, Release).ok();
     }
 
     pub fn push(&self, t: T) {

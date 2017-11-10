@@ -274,6 +274,11 @@ impl GlobalState {
                     pin,
                 )
             {
+                // TODO: share this among other threads. Find out a good way to do this.
+                // Idea: set the global state to something, eg. use a second lower bit in `epoch`
+                // to signal that we are in "freeing mode". Then all threads calling 'pin' will be
+                // set to pull out garbage from the queue, as long as there is more left.
+                //
                 // Since we've popped the bag from the queue, this thread is the only thread
                 // accessing the bag. This isn't true in general, since `pop_if` accesses the bag,
                 // and can read whatever it wants. However, we only use `pop_if` in one place, and
