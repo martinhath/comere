@@ -240,9 +240,9 @@ impl<T> Atomic<T> {
         &self,
         current: Ptr<T>,
         new: Ptr<T>,
-        ord: Ordering,
+        ord: Ordering
     ) -> Result<(), Ptr<'scope, T>> {
-        match self.data.compare_exchange(current.data, new.data, ord, ord) {
+        match self.data.compare_exchange(current.data, new.data, ord, Ordering::Relaxed) {
             Ok(_) => Ok(()),
             Err(previous) => Err(Ptr::from_data(previous)),
         }
@@ -283,7 +283,7 @@ impl<T> Atomic<T> {
             current.data,
             new.data,
             ord,
-            ord,
+            Ordering::Relaxed,
         ) {
             Ok(_) => Ok(()),
             Err(previous) => Err(Ptr::from_data(previous)),
@@ -315,7 +315,7 @@ impl<T> Atomic<T> {
         new: Owned<T>,
         ord: Ordering,
     ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)> {
-        match self.data.compare_exchange(current.data, new.data, ord, ord) {
+        match self.data.compare_exchange(current.data, new.data, ord, Ordering::Relaxed) {
             Ok(_) => {
                 let data = new.data;
                 mem::forget(new);
@@ -368,7 +368,7 @@ impl<T> Atomic<T> {
             current.data,
             new.data,
             ord,
-            ord,
+            Ordering::Relaxed,
         ) {
             Ok(_) => {
                 let data = new.data;
@@ -929,11 +929,100 @@ impl<'scope, T> Ptr<'scope, T> {
     pub fn with_tag(&self, tag: usize) -> Self {
         Self::from_data(data_with_tag::<T>(self.data, tag))
     }
+
+    pub fn hazard(self) -> HazardPtr<T> {
+        HazardPtr::from_ptr(self)
+    }
 }
 
 impl<'scope, T> Default for Ptr<'scope, T> {
     fn default() -> Self {
         Ptr::null()
+    }
+}
+
+#[derive(Debug)]
+pub struct HazardPtr<T> {
+    data: usize,
+    _marker: PhantomData<*const T>,
+}
+
+use ::hp::{NUM_HP, ThreadEntry, get_entry};
+// TODO: debug, remove
+use ::hp::get_thread_id;
+
+impl<T> HazardPtr<T> {
+    fn register(data: usize) -> Result<(), ()> {
+        let entry: &mut ThreadEntry = get_entry();
+        entry.id = get_thread_id();
+        for i in 0..NUM_HP {
+            let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
+            if hp == 0 {
+                entry.hazard_pointers[i].store(data, Ordering::SeqCst);
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
+    fn deregister(&self) -> Result<() ,()> {
+        let entry: &mut ThreadEntry = get_entry();
+        for i in 0..NUM_HP {
+            let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
+            if hp == self.data {
+                entry.hazard_pointers[i].store(0, Ordering::SeqCst);
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
+    // TODO: name
+    /// Check if the pointer is marked as hazardous by any other thread. This should only be called
+    /// after deregistering, or else we will report itself.
+    fn scan(&self) -> bool {
+        for e in ::hp::ENTRIES.iter() {
+            for p in e.hazard_pointers.iter() {
+                if self.data == p.load(Ordering::SeqCst) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // TODO: name
+    /// Spin until no other threads have registered the current pointer as hazardous. This should
+    /// only be called after making the data unreachable, or else we risk spinning forever.
+    pub fn wait(&self) {
+        assert!(self.deregister().is_ok());
+        while self.scan() {
+            ::std::thread::yield_now();
+        }
+    }
+
+    pub fn from_ptr(ptr: Ptr<T>) -> Self {
+        let p = ptr.data;
+        // TODO: as of now, running out of HPs is a hard error. This does  make sense to have, but
+        // maybe we'd like to make it a little more resillient?
+        assert!(Self::register(p).is_ok());
+        HazardPtr {
+            data: p,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn from_owned(ptr: Owned<T>) -> Self {
+        // TODO: does this make sense? Maybe the HP should  know whether the value it has is owned
+        // or not? Or maybe this is the responsibility of the caller?
+        Self::from_ptr(ptr.into_ptr())
+    }
+}
+
+impl<T> Drop for HazardPtr<T> {
+    fn drop(&mut self) {
+        // It is OK if this fails, since the HP might have been deregistered before.
+        let _ = self.deregister();
     }
 }
 

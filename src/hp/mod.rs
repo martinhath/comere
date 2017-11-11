@@ -7,15 +7,15 @@ pub mod queue;
 pub mod list;
 
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::SeqCst;
 
 
 /// The number of hazard pointers for each thread.
 const NUM_HP: usize = 3;
 
-/// Data each thread needs to keep track of the hazard pointers.
-/// We must use atomics here; if we do not we will have race conditions when one threads
-/// scans, and another thread edits its entry.
+/// Data each thread needs to keep track of the hazard pointers.  We must use atomics here; if we
+/// do not we will have race conditions when one threads scans, and another thread edits its entry.
+///
+/// We mark the entry with the thread id, for debugging. TODO: remove.
 #[derive(Debug)]
 struct ThreadEntry {
     hazard_pointers: [AtomicUsize; NUM_HP],
@@ -37,67 +37,6 @@ impl ThreadEntry {
             entry
         }
     }
-}
-
-pub struct HazardHandle {
-    ptr: *const (),
-}
-
-impl HazardHandle {
-    fn new<T>(ptr: *const T) -> Self {
-        Self { ptr: ptr as *const () }
-    }
-
-    fn get(&self) -> *const () { self.ptr }
-}
-
-impl Drop for HazardHandle {
-    fn drop(&mut self) {
-        deregister_hp(self.ptr);
-    }
-}
-
-/// Register the given pointer as a hazzard pointer.
-/// Return `true` if we succeed, `false` if not.
-pub fn register_hp<T>(ptr: *const T) -> Option<HazardHandle> {
-    let entry: &mut ThreadEntry = get_entry();
-    entry.id = get_thread_id();
-    for i in 0..NUM_HP {
-        let hp = entry.hazard_pointers[i].load(SeqCst);
-        if hp == 0 {
-            entry.hazard_pointers[i].store(ptr as usize, SeqCst);
-            return Some(HazardHandle::new(ptr));
-        }
-    }
-    None
-}
-
-/// Deregister the given pointer as a hazzard pointer.
-/// Return `true` if we succeed, `false` if not.
-fn deregister_hp<T>(ptr: *const T) -> bool {
-    let ptr = ptr as usize;
-    let entry: &mut ThreadEntry = get_entry();
-    for i in 0..NUM_HP {
-        let hp = entry.hazard_pointers[i].load(SeqCst);
-        if hp == ptr {
-            entry.hazard_pointers[i].store(0, SeqCst);
-            return true;
-        }
-    }
-    false
-}
-
-/// Checks weather the given pointer is a registered hazard pointer.
-pub fn scan<T>(ptr: *const T) -> bool {
-    let ptr = ptr as usize;
-    for e in ENTRIES.iter() {
-        for p in e.hazard_pointers.iter() {
-            if ptr == p.load(SeqCst) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 use std::cell::RefCell;
@@ -141,61 +80,4 @@ pub fn register_thread(i: usize) {
 // TODO: remove debug
 pub fn get_thread_id() -> usize {
     LOCAL_ID.with(|l| *l.borrow())
-}
-
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::thread::spawn;
-
-    // This test is broken.
-    // #[test]
-    /// Confirm that `get_entry` makes an entry on the initial call,
-    /// and that it does not create multiple entries. Also check that registering
-    /// and deregistering HPs works.
-    fn setup() {
-        get_entry();
-        let a = spawn(|| for _ in 0..10 {
-            get_entry();
-        });
-        let b = spawn(|| for _ in 0..10 {
-            get_entry();
-        });
-        a.join().unwrap();
-        b.join().unwrap();
-        // Check that entries for all three threads are here. We cannot assume that there are only
-        // three threads here, since tests are ran in parallel, so if we're running other HP
-        // tests at the same time, this count will be higher. This makes the test less robust, but
-        // the alternative is to not test this at all, or to run tests sequentially. The latter is
-        // an option.
-        assert!(ENTRIES.iter().count() >= 3);
-        // Check that all HPs are zero.
-        for entry in ENTRIES.iter() {
-            for hp in entry.hazard_pointers.iter() {
-                assert_eq!(hp.load(SeqCst), 0);
-            }
-        }
-        assert!(NUM_HP >= 2);
-        let ptr1 = 12 as *const u32;
-        let handle1 = register_hp(ptr1);
-        assert!(handle1.is_some());
-        let ptr2 = 48 as *const u32;
-        let handle2 = register_hp(ptr2);
-        assert!(handle2.is_some());
-        // confirm that one thread has set its pointers,
-        // and the other has not.
-        for entry in ENTRIES.iter() {
-            let sum: usize = entry.hazard_pointers.iter().map(|a| a.load(SeqCst)).sum();
-            assert!(sum == 0 || sum == 12 + 48);
-        }
-        // and back again
-        ::std::mem::drop(handle1);
-        ::std::mem::drop(handle2);
-        for entry in ENTRIES.iter() {
-            for hp in entry.hazard_pointers.iter() {
-                assert_eq!(hp.load(SeqCst), 0);
-            }
-        }
-    }
 }

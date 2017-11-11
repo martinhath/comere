@@ -56,7 +56,7 @@ impl<T> Queue<T> {
         let new_node = node.into_ptr();
         loop {
             let tail: Ptr<Node<T>> = self.tail.load(Acquire);
-            let tail_hp = register_hp(tail.as_raw());
+            let tail_hp = tail.hazard();
             {
                 if self.tail.load(Acquire) != tail {
                     drop(tail_hp);
@@ -87,7 +87,7 @@ impl<T> Queue<T> {
 
     pub fn pop(&self) -> Option<T> {
         let head: Ptr<Node<T>> = self.head.load(Acquire);
-        let head_hp = register_hp(head.as_raw()).expect("Failed to register HP");
+        let head_hp = head.hazard();
         // validate:
         {
             let new_head: Ptr<Node<T>> = self.head.load(Acquire);
@@ -102,7 +102,7 @@ impl<T> Queue<T> {
         if next.is_null() {
             return None;
         }
-        let next_hp = register_hp(next.as_raw()).expect("Failed to register HP");
+        let next_hp = next.hazard();
         {
             if h.next.load(Acquire) != next {
                 drop(next_hp);
@@ -122,11 +122,8 @@ impl<T> Queue<T> {
                     Ok(()) => {
                         let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
                         drop(next_hp);
-                        drop(head_hp);
                         // While someone is using the head pointer, keep it here.
-                        while scan(head.as_raw()) {
-                            ::std::thread::yield_now();
-                        }
+                        head_hp.wait();
                         // Drop it when we can; `head` is no longer reachable.
                         ::std::mem::drop(head.to_owned());
                         ret

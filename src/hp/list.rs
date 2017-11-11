@@ -1,8 +1,7 @@
 use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use std::mem::drop;
 
-use super::atomic::{Owned, Atomic, Ptr};
-use super::{register_hp, scan, HazardHandle};
+use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -78,7 +77,7 @@ impl<T> List<T> {
             if head_ptr.is_null() {
                 return None;
             }
-            let head_hp = register_hp(head_ptr.as_raw()).expect("Failed to register HP");
+            let head_hp = head_ptr.hazard();
             {
                 if self.head.load(SeqCst) != head_ptr {
                     drop(head_hp);
@@ -89,11 +88,7 @@ impl<T> List<T> {
             let next = head.next.load(Relaxed);
             match self.head.compare_and_set(head_ptr, next, SeqCst) {
                 Ok(()) => {
-                    let addr = head_hp.get();
-                    drop(head_hp);
-                    while scan(addr) {
-                        // println!("spin {:?}", addr);
-                    }
+                    head_hp.wait();
                     let data = Some(unsafe {::std::ptr::read(&head.data)});
                     unsafe {
                         // Since we have made the node unreachable, and no thread has registered
@@ -143,10 +138,10 @@ where
                 return false;
             }
             let mut current: &Node<T>;
-            let mut prev_handle: Option<HazardHandle> = None;
+            let mut prev_handle: Option<HazardPtr<::hp::list::Node<T>>> = None;
 
             loop {
-                let curr_handle = register_hp(current_ptr.as_raw()).expect("Failed to register HP");
+                let curr_handle = current_ptr.hazard();
                 // validate
                 {
                     if previous_node_ptr.load(SeqCst) != current_ptr {
@@ -178,9 +173,7 @@ where
                         Ok(_) => {
                             // Now `current` is not reachable from the list.
                             // TODO(6.11.17): have a way to do this in one operation?
-                            let addr = curr_handle.get();
-                            drop(curr_handle);
-                            while scan(addr) {}
+                            curr_handle.wait();
                             unsafe {
                                 // Since we have made the node unreachable, and
                                 // no thread has registered it as hazardous, it
