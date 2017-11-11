@@ -11,64 +11,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-/// Given ordering for the success case in a compare-exchange operation, returns the strongest
-/// appropriate ordering for the failure case.
-#[inline]
-fn strongest_failure_ordering(ord: Ordering) -> Ordering {
-    use self::Ordering::*;
-    match ord {
-        Relaxed | Release => Relaxed,
-        Acquire | AcqRel => Acquire,
-        _ => SeqCst,
-    }
-}
-
-/// Memory orderings for compare-and-set operations.
-///
-/// A compare-and-set operation can have different memory orderings depending on whether it
-/// succeeds or fails. This trait generalizes different ways of specifying memory orderings.
-///
-/// The two ways of specifying orderings for compare-and-set are:
-///
-/// 1. Just one `Ordering` for the success case. In case of failure, the strongest appropriate
-///    ordering is chosen.
-/// 2. A pair of `Ordering`s. The first one is for the success case, while the second one is
-///    for the failure case.
-pub trait CompareAndSetOrdering {
-    /// The ordering of the operation when it succeeds.
-    fn success(&self) -> Ordering;
-
-    /// The ordering of the operation when it fails.
-    ///
-    /// The failure ordering can't be `Release` or `AcqRel` and must be equivalent or weaker than
-    /// the success ordering.
-    fn failure(&self) -> Ordering;
-}
-
-impl CompareAndSetOrdering for Ordering {
-    #[inline]
-    fn success(&self) -> Ordering {
-        *self
-    }
-
-    #[inline]
-    fn failure(&self) -> Ordering {
-        strongest_failure_ordering(*self)
-    }
-}
-
-impl CompareAndSetOrdering for (Ordering, Ordering) {
-    #[inline]
-    fn success(&self) -> Ordering {
-        self.0
-    }
-
-    #[inline]
-    fn failure(&self) -> Ordering {
-        self.1
-    }
-}
-
 /// Panics if the pointer is not properly unaligned.
 #[inline]
 fn ensure_aligned<T>(raw: *const T) {
@@ -281,11 +223,6 @@ impl<T> Atomic<T> {
     /// The return value is a result indicating whether the new pointer was written. On failure the
     /// actual current value is returned.
     ///
-    /// This method takes a [`CompareAndSetOrdering`] argument which describes the memory
-    /// ordering of this operation.
-    ///
-    /// [`CompareAndSetOrdering`]: trait.CompareAndSetOrdering.html
-    ///
     /// # Examples
     ///
     /// ```
@@ -299,21 +236,13 @@ impl<T> Atomic<T> {
     ///     let res = a.compare_and_set(curr, Ptr::null(), SeqCst, scope);
     /// });
     /// ```
-    pub fn compare_and_set<'scope, O>(
+    pub fn compare_and_set<'scope>(
         &self,
         current: Ptr<T>,
         new: Ptr<T>,
-        ord: O,
-    ) -> Result<(), Ptr<'scope, T>>
-    where
-        O: CompareAndSetOrdering,
-    {
-        match self.data.compare_exchange(
-            current.data,
-            new.data,
-            ord.success(),
-            ord.failure(),
-        ) {
+        ord: Ordering,
+    ) -> Result<(), Ptr<'scope, T>> {
+        match self.data.compare_exchange(current.data, new.data, ord, ord) {
             Ok(_) => Ok(()),
             Err(previous) => Err(Ptr::from_data(previous)),
         }
@@ -325,12 +254,6 @@ impl<T> Atomic<T> {
     /// comparison succeeds, which can result in more efficient code on some platforms.
     /// The return value is a result indicating whether the new pointer was written. On failure the
     /// actual current value is returned.
-    ///
-    /// This method takes a [`CompareAndSetOrdering`] argument which describes the memory
-    /// ordering of this operation.
-    ///
-    /// [`compare_and_set`]: struct.Atomic.html#method.compare_and_set
-    /// [`CompareAndSetOrdering`]: trait.CompareAndSetOrdering.html
     ///
     /// # Examples
     ///
@@ -350,20 +273,17 @@ impl<T> Atomic<T> {
     ///     }
     /// });
     /// ```
-    pub fn compare_and_set_weak<'scope, O>(
+    pub fn compare_and_set_weak<'scope>(
         &self,
         current: Ptr<T>,
         new: Ptr<T>,
-        ord: O,
-    ) -> Result<(), Ptr<'scope, T>>
-    where
-        O: CompareAndSetOrdering,
-    {
+        ord: Ordering,
+    ) -> Result<(), Ptr<'scope, T>> {
         match self.data.compare_exchange_weak(
             current.data,
             new.data,
-            ord.success(),
-            ord.failure(),
+            ord,
+            ord,
         ) {
             Ok(_) => Ok(()),
             Err(previous) => Err(Ptr::from_data(previous)),
@@ -375,11 +295,6 @@ impl<T> Atomic<T> {
     /// The return value is a result indicating whether the new pointer was written. On success the
     /// pointer that was written is returned. On failure `new` and the actual current value are
     /// returned.
-    ///
-    /// This method takes a [`CompareAndSetOrdering`] argument which describes the memory
-    /// ordering of this operation.
-    ///
-    /// [`CompareAndSetOrdering`]: trait.CompareAndSetOrdering.html
     ///
     /// # Examples
     ///
@@ -394,21 +309,13 @@ impl<T> Atomic<T> {
     ///     let res = a.compare_and_set_owned(curr, Owned::new(5678), SeqCst, scope);
     /// });
     /// ```
-    pub fn compare_and_set_owned<'scope, O>(
+    pub fn compare_and_set_owned<'scope>(
         &self,
         current: Ptr<T>,
         new: Owned<T>,
-        ord: O,
-    ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)>
-    where
-        O: CompareAndSetOrdering,
-    {
-        match self.data.compare_exchange(
-            current.data,
-            new.data,
-            ord.success(),
-            ord.failure(),
-        ) {
+        ord: Ordering,
+    ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)> {
+        match self.data.compare_exchange(current.data, new.data, ord, ord) {
             Ok(_) => {
                 let data = new.data;
                 mem::forget(new);
@@ -425,12 +332,6 @@ impl<T> Atomic<T> {
     /// The return value is a result indicating whether the new pointer was written. On success the
     /// pointer that was written is returned. On failure `new` and the actual current value are
     /// returned.
-    ///
-    /// This method takes a [`CompareAndSetOrdering`] argument which describes the memory
-    /// ordering of this operation.
-    ///
-    /// [`compare_and_set_owned`]: struct.Atomic.html#method.compare_and_set_owned
-    /// [`CompareAndSetOrdering`]: trait.CompareAndSetOrdering.html
     ///
     /// # Examples
     ///
@@ -457,20 +358,17 @@ impl<T> Atomic<T> {
     ///     }
     /// });
     /// ```
-    pub fn compare_and_set_weak_owned<'scope, O>(
+    pub fn compare_and_set_weak_owned<'scope>(
         &self,
         current: Ptr<T>,
         new: Owned<T>,
-        ord: O,
-    ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)>
-    where
-        O: CompareAndSetOrdering,
-    {
+        ord: Ordering,
+    ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)> {
         match self.data.compare_exchange_weak(
             current.data,
             new.data,
-            ord.success(),
-            ord.failure(),
+            ord,
+            ord,
         ) {
             Ok(_) => {
                 let data = new.data;
