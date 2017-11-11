@@ -1,43 +1,37 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
-//! Epoch Based Reclamation (EBR). This is the same approach that `crossbeam-epoch`
-//! is based on. It is low very overhead compared to eg. Hazard Pointers.
+//! Epoch Based Reclamation (EBR). This is the same approach that `crossbeam-epoch` is based on. It
+//! is low very overhead compared to eg. Hazard Pointers.
 //!
-//! The scheme works as follows: there is a global number, called the `epoch`.
-//! Each thread has a local epoch, which is the latest observed global epoch.
-//! When threads want to delete stuff, the garbage is put in a list for the
-//! current epoch.
+//! The scheme works as follows: there is a global number, called the `epoch`.  Each thread has a
+//! local epoch, which is the latest observed global epoch.  When threads want to delete stuff, the
+//! garbage is put in a list for the current epoch.
 //!
-//! When threads want to perform memory operations, the `pin` the current epoch.
-//! We keep track of the epochs of threads pinning. This way, if all threads
-//! pinning have seen epoch `e`, we can safely destroy garbage from
-//! epoch `e-2`.
+//! When threads want to perform memory operations, the `pin` the current epoch.  We keep track of
+//! the epochs of threads pinning. This way, if all threads pinning have seen epoch `e`, we can
+//! safely destroy garbage from epoch `e-2`.
 //!
 //! # Inner workings
 //!
-//! The system works as follows:
-//! globally there is a list of `ThreadPinMarker`s, which contains
-//! all threads that have ever `pin`ned somehting, as well as whether
-//! the thread is currently pinning anything, and the last seen epoch
-//! of that thread. Every once in a while, when a thread pins something,
-//! it walks the list and checks which epoch all threads which are
-//! pinned have seen.  If they have all seen epoch `n`, the garbage
-//! from epoch `n-2` is free to be collected, so the thread can free
-//! this garbage.
+//! The system works as follows: globally there is a list of `ThreadPinMarker`s, which contains all
+//! threads that have ever `pin`ned somehting, as well as whether the thread is currently pinning
+//! anything, and the last seen epoch of that thread. Every once in a while, when a thread pins
+//! something, it walks the list and checks which epoch all threads which are pinned have seen.  If
+//! they have all seen epoch `n`, the garbage from epoch `n-2` is free to be collected, so the
+//! thread can free this garbage.
 //!
-//! Threads also have some local data, which includes a pointer to the
-//! node in the global list. When `pin` is called, we use this pointer
-//! to update the `ThreadPinMarker` struct in the list.
+//! Threads also have some local data, which includes a pointer to the node in the global list.
+//! When `pin` is called, we use this pointer to update the `ThreadPinMarker` struct in the list.
 //!
 //! # Details on freeing memory
 //!
 //! When clients wants to free memory, they call `pin::add_garbage`, supplying a `Owned<T>`. This
 //! is the only thing clients need to do, and the only thing they need to make sure of is that no
 //! other thread is adding the same memory (this should be fine, since we're taking an `Owned`,
-//! which _should be_ unique). This pointer is passed to `LocalState::add_garbage`, which makes
-//! a `Garbage` object containing it. The garbage object is used to abstract away handling
-//! different destructors for different types, so that we only worry about `Drop`ping, and not the
-//! types of what we are dropping.
+//! which _should be_ unique). This pointer is passed to `LocalState::add_garbage`, which makes a
+//! `Garbage` object containing it. The garbage object is used to abstract away handling different
+//! destructors for different types, so that we only worry about `Drop`ping, and not the types of
+//! what we are dropping.
 //!
 //! `Garbage` is just a `Box<FnOnce>`, so it is a closure that is heap allocated (since it is not
 //! `sized`). When we `Drop` the garbage, we first drop the closure, which in turn drops the values
