@@ -224,3 +224,23 @@ where
         false
     }
 }
+
+mod bench {
+    extern crate test;
+
+    #[bench]
+    fn insert(b: &mut test::Bencher) {
+        let list = super::List::new();
+        b.iter(|| ::ebr::pin(|pin| list.insert(0usize, pin)))
+    }
+
+    #[bench]
+    fn remove_front(b: &mut test::Bencher) {
+        const N: usize = 1024 * 1024;
+        let list = super::List::new();
+        for i in 0..N {
+            ::ebr::pin(|pin| { list.insert(i, pin); });
+        }
+        b.iter(|| ::ebr::pin(|pin| list.remove_front(pin)));
+    }
+}

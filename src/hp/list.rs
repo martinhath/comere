@@ -366,6 +366,7 @@ mod test {
         }
     }
 }
+
 mod bench {
     extern crate test;
 

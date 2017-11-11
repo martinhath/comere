@@ -363,9 +363,7 @@ impl<'scope> Pin<'scope> {
     ///
     /// TODO: rename this, and probably mark as `unsafe`.
     pub fn fake() -> Self {
-        Pin {
-            _marker: PhantomData,
-        }
+        Pin { _marker: PhantomData }
     }
 
     /// Add the Owned pointer as garbage. This is the first step in freeing used memory, and it is
@@ -398,9 +396,7 @@ where
     F: FnOnce(Pin<'scope>) -> R,
 {
     // Make the pin
-    let p = Pin {
-        _marker: PhantomData,
-    };
+    let p = Pin { _marker: PhantomData };
 
     // Get the marker, or make it if it is `null`.
     let marker = {

@@ -239,16 +239,12 @@ mod bench {
     #[bench]
     fn queue_push(b: &mut test::Bencher) {
         let q = super::Queue::new();
-        b.iter(|| {
-            q.push(0);
-        });
+        b.iter(|| { q.push(0); });
     }
 
     #[bench]
     fn queue_enqueue(b: &mut test::Bencher) {
         let q = super::Queue::new();
-        b.iter(|| {
-            q.enqueue(0);
-        });
+        b.iter(|| { q.enqueue(0); });
     }
 }

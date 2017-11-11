@@ -240,9 +240,14 @@ impl<T> Atomic<T> {
         &self,
         current: Ptr<T>,
         new: Ptr<T>,
-        ord: Ordering
+        ord: Ordering,
     ) -> Result<(), Ptr<'scope, T>> {
-        match self.data.compare_exchange(current.data, new.data, ord, Ordering::Relaxed) {
+        match self.data.compare_exchange(
+            current.data,
+            new.data,
+            ord,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => Ok(()),
             Err(previous) => Err(Ptr::from_data(previous)),
         }
@@ -315,7 +320,12 @@ impl<T> Atomic<T> {
         new: Owned<T>,
         ord: Ordering,
     ) -> Result<Ptr<'scope, T>, (Ptr<'scope, T>, Owned<T>)> {
-        match self.data.compare_exchange(current.data, new.data, ord, Ordering::Relaxed) {
+        match self.data.compare_exchange(
+            current.data,
+            new.data,
+            ord,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => {
                 let data = new.data;
                 mem::forget(new);
@@ -947,9 +957,9 @@ pub struct HazardPtr<T> {
     _marker: PhantomData<*const T>,
 }
 
-use ::hp::{NUM_HP, ThreadEntry, get_entry};
+use hp::{NUM_HP, ThreadEntry, get_entry};
 // TODO: debug, remove
-use ::hp::get_thread_id;
+use hp::get_thread_id;
 
 impl<T> HazardPtr<T> {
     fn register(data: usize) -> Result<(), ()> {
@@ -965,7 +975,7 @@ impl<T> HazardPtr<T> {
         Err(())
     }
 
-    fn deregister(&self) -> Result<() ,()> {
+    fn deregister(&self) -> Result<(), ()> {
         let entry: &mut ThreadEntry = get_entry();
         for i in 0..NUM_HP {
             let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
