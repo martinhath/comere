@@ -8,3 +8,16 @@ lazy_static = "*"
 
 [dev-dependencies]
 rand = "*"
+bencher = "*"
+
+[profile.bench]
+debug = true
+
+[[bench]]
+name = "queue"
+harness = false
+
+[[bench]]
+name = "list"
+harness = false
+

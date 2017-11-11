@@ -1,9 +1,6 @@
 use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use super::atomic::{Owned, Atomic, Ptr};
 
-// Avoid debug and cmp generic problems for now
-type T = u32;
-
 #[derive(Debug)]
 pub struct Node<T> {
     data: T,
@@ -11,7 +8,7 @@ pub struct Node<T> {
 }
 
 #[derive(Debug)]
-pub struct List {
+pub struct List<T> {
     head: Atomic<Node<T>>,
 }
 
@@ -24,7 +21,7 @@ impl<T> Node<T> {
     }
 }
 
-impl List {
+impl<T> List<T> {
     pub fn new() -> Self {
         Self { head: Atomic::null() }
     }
@@ -62,6 +59,28 @@ impl List {
         ret
     }
 
+    /// Removes and returns the first element of the list, if any.
+    pub fn remove_front(&self) -> Option<T> {
+        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed);
+        loop {
+            if head_ptr.is_null() {
+                return None;
+            }
+            let head: &Node<T> = unsafe { head_ptr.deref() };
+            let next = head.next.load(Relaxed);
+            match self.head.compare_and_set(head_ptr, next, Release) {
+                Ok(()) => {
+                    return Some(unsafe {::std::ptr::read(&head.data)})
+                }
+                Err(new_head) => {
+                    head_ptr = new_head;
+                }
+            }
+        }
+    }
+}
+
+impl<T: PartialEq> List<T> {
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
         let previous_atomic: &Atomic<Node<T>> = &self.head;
@@ -137,26 +156,6 @@ impl List {
                         return false;
                     }
                     current = unsafe { current_ptr.deref() };
-                }
-            }
-        }
-    }
-
-    /// Removes and returns the first element of the list, if any.
-    pub fn remove_front(&self) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed);
-        loop {
-            if head_ptr.is_null() {
-                return None;
-            }
-            let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed);
-            match self.head.compare_and_set(head_ptr, next, Release) {
-                Ok(()) => {
-                    return Some(unsafe {::std::ptr::read(&head.data)})
-                }
-                Err(new_head) => {
-                    head_ptr = new_head;
                 }
             }
         }

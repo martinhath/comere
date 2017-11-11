@@ -1,15 +1,13 @@
 use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
-use std::mem::drop;
+use std::mem::{drop, ManuallyDrop};
 
 use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
 
-#[derive(Debug)]
 pub struct Node<T> {
-    pub data: T,
+    data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
-#[derive(Debug)]
 pub struct List<T> {
     head: Atomic<Node<T>>,
 }
@@ -17,13 +15,14 @@ pub struct List<T> {
 impl<T> Node<T> {
     fn new(data: T) -> Self {
         Self {
-            data,
+            data: ManuallyDrop::new(data),
             next: Atomic::null(),
         }
     }
 
     fn data_ptr(&self) -> Ptr<T> {
-        Ptr::from_raw(&self.data as *const T)
+        let t: &T = &*self.data;
+        Ptr::from_raw(t as *const T)
     }
 }
 
@@ -89,13 +88,16 @@ impl<T> List<T> {
             match self.head.compare_and_set(head_ptr, next, SeqCst) {
                 Ok(()) => {
                     head_hp.wait();
-                    let data = Some(unsafe {::std::ptr::read(&head.data)});
+                    // Now the head is made unreachable from the queue, and no thread has marked
+                    // the pointer in the hazard list. Then we have exclusive access to it. Read
+                    // the data, and free the node.
+                    let data = unsafe {::std::ptr::read(&head.data)};
                     unsafe {
                         // Since we have made the node unreachable, and no thread has registered
                         // it as hazardous, it is safe to free.
-                        drop(head_ptr.into_owned());
+                        head_hp.free();
                     }
-                    return data
+                    return Some(ManuallyDrop::into_inner(data));
                 }
                 Err(new_head) => {
                     head_ptr = new_head;
@@ -152,7 +154,7 @@ where
                 }
                 current = unsafe { current_ptr.deref() };
 
-                if current.data == *value {
+                if *current.data == *value {
                     // Now we want to remove the current node from the list.  We first need to mark
                     // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
                     // we avoid that other threads are inserting something after the current node,
@@ -222,7 +224,7 @@ where
         let mut node;
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
-            if node.data == *value {
+            if *node.data == *value {
                 return true;
             }
             node_ptr = node.next.load(Relaxed);
@@ -246,6 +248,27 @@ impl<'a, T> Iterator for Iter<'a, T> {
             Some(&node.data)
         } else {
             None
+        }
+    }
+}
+
+impl<T> Drop for List<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let mut ptr = self.head.load(SeqCst);
+            // The first node has no valid data - this is already returned by `pop`, and if nothing
+            // is popped it is uninitialized data.
+            let node = ptr.into_owned();
+            let next = node.next.load(SeqCst);
+            ::std::mem::drop(node);
+            ptr = next;
+            while !ptr.is_null() {
+                let mut node: Owned<Node<T>> = ptr.into_owned();
+                let next = node.next.load(SeqCst);
+                ManuallyDrop::drop(&mut (*node).data);
+                ::std::mem::drop(node);
+                ptr = next;
+            }
         }
     }
 }
@@ -364,25 +387,5 @@ mod test {
         for (i, n) in v.into_iter().enumerate() {
             assert_eq!(i, n);
         }
-    }
-}
-
-mod bench {
-    extern crate test;
-
-    #[bench]
-    fn insert(b: &mut test::Bencher) {
-        let list = super::List::new();
-        b.iter(|| { list.insert(0usize); })
-    }
-
-    #[bench]
-    fn remove_front(b: &mut test::Bencher) {
-        const N: usize = 1024 * 1024;
-        let list = super::List::new();
-        for i in 0..N {
-            list.insert(i);
-        }
-        b.iter(|| { list.remove_front(); });
     }
 }

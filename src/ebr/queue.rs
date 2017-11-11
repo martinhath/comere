@@ -545,23 +545,3 @@ mod test {
         }
     }
 }
-
-mod bench {
-    extern crate test;
-
-    #[bench]
-    fn insert(b: &mut test::Bencher) {
-        let list = super::Queue::new();
-        b.iter(|| { ::ebr::pin(|pin| { list.push(0usize, pin); }); })
-    }
-
-    #[bench]
-    fn remove_front(b: &mut test::Bencher) {
-        const N: usize = 1024 * 1024;
-        let list = super::Queue::new();
-        ::ebr::pin(|pin| for i in 0..N {
-            list.push(i, pin);
-        });
-        b.iter(|| ::ebr::pin(|pin| { list.pop(pin); }));
-    }
-}

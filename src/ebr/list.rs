@@ -1,37 +1,27 @@
 use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use super::atomic::{Owned, Atomic, Ptr};
+use std::mem::ManuallyDrop;
+use super::{Pin, pin};
 
-use super::Pin;
-
-// Avoid debug and cmp generic problems for now
-#[derive(Debug)]
 pub struct Node<T> {
-    pub data: T,
+    pub data: ManuallyDrop<T>,
     pub next: Atomic<Node<T>>,
 }
 
-#[derive(Debug)]
-pub struct List<T>
-where
-    T: ::std::fmt::Debug,
-{
+pub struct List<T> {
     head: Atomic<Node<T>>,
 }
 
 impl<T> Node<T> {
     fn new(data: T) -> Self {
         Self {
-            data,
+            data: ManuallyDrop::new(data),
             next: Atomic::null(),
         }
     }
 }
 
-// TODO: remove type constraints, and add another `impl` for Eq
-impl<T> List<T>
-where
-    T: ::std::fmt::Debug,
-{
+impl<T> List<T> {
     pub fn new() -> Self {
         Self { head: Atomic::null() }
     }
@@ -80,7 +70,8 @@ where
             let next = head.next.load(Relaxed, _pin);
             match self.head.compare_and_set(head_ptr, next, Release, _pin) {
                 Ok(()) => {
-                    return Some(unsafe {::std::ptr::read(&head.data)})
+                    let data = unsafe {::std::ptr::read(&head.data)};
+                    return Some(ManuallyDrop::into_inner(data))
                 }
                 Err(new_head) => {
                     head_ptr = new_head;
@@ -138,10 +129,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-impl<T> List<T>
-where
-    T: ::std::fmt::Debug + ::std::cmp::Eq,
-{
+impl<T: ::std::cmp::PartialEq> List<T> {
     /// Remove the first node in the list where `node.data == key`
     ///
     /// Note that this method causes the list to not be lock-free, since
@@ -160,7 +148,7 @@ where
 
             loop {
                 let next_ptr = current.next.load(SeqCst, _pin).with_tag(0);
-                if current.data == *value {
+                if *current.data == *value {
                     // Now we want to remove the current node from the list.
                     // We first need to mark this node as 'to-be-deleted',
                     // by tagging its next pointer. When doing this, we avoid
@@ -216,7 +204,7 @@ where
         let mut node;
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
-            if node.data == *value {
+            if *node.data == *value {
                 return true;
             }
             node_ptr = node.next.load(Relaxed, _pin);
@@ -225,22 +213,107 @@ where
     }
 }
 
-mod bench {
-    extern crate test;
+impl<T> Drop for List<T> {
+    fn drop(&mut self) {
+        unsafe {
+            pin(|pin| {
+                let mut ptr = self.head.load(SeqCst, pin);
+                // The first node has no valid data - this is already returned by `pop`, and if nothing
+                // is popped it is uninitialized data.
+                let node = ptr.into_owned();
+                let next = node.next.load(SeqCst, pin);
+                ::std::mem::drop(node);
+                ptr = next;
+                while !ptr.is_null() {
+                    let mut node: Owned<Node<T>> = ptr.into_owned();
+                    let next = node.next.load(SeqCst, pin);
+                    {
+                        let data: &mut ManuallyDrop<T> = &mut (*node).data;
+                        ManuallyDrop::drop(data);
+                    }
+                    ::std::mem::drop(node);
+                    ptr = next;
+                }
+            })
+        }
+    }
+}
 
-    #[bench]
-    fn insert(b: &mut test::Bencher) {
-        let list = super::List::new();
-        b.iter(|| ::ebr::pin(|pin| list.insert(0usize, pin)))
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rand::{thread_rng, Rng};
+
+    use std::thread::spawn;
+    use std::sync::Arc;
+
+    #[test]
+    fn insert() {
+        let list = List::new();
+        const N: usize = 32;
+        for i in 0..N {
+            pin(|pin| {
+                assert!(!list.insert(i, pin).is_null());
+            });
+        }
+        pin(|pin| assert_eq!(list.iter(pin).count(), N));
     }
 
-    #[bench]
-    fn remove_front(b: &mut test::Bencher) {
-        const N: usize = 1024 * 1024;
-        let list = super::List::new();
-        for i in 0..N {
-            ::ebr::pin(|pin| { list.insert(i, pin); });
+    #[test]
+    fn remove_front() {
+        let list = List::new();
+        const N: usize = 32;
+        pin(|pin| for i in 0..N {
+            assert!(!list.insert(i, pin).is_null());
+        });
+        for i in (0..N).rev() {
+            let ret = pin(|pin| list.remove_front(pin));
+            assert_eq!(ret, Some(i));
         }
-        b.iter(|| ::ebr::pin(|pin| list.remove_front(pin)));
+        pin(|pin| assert_eq!(list.iter(pin).next(), None));
+    }
+
+    #[test]
+    fn stress_test() {
+        const N_THREADS: usize = 4;
+        const N: usize = 1024 * 1024;
+
+        // NOTE: we can replace the arc problems by using crossbeams's `scope`,
+        // instead of `thread::spawn`.
+        let source = Arc::new(List::new());
+        let sink = Arc::new(List::new());
+
+        // Pre-fill the source with stuff
+        pin(|pin| for n in 0..N {
+            source.insert(n, pin);
+        });
+
+        let threads = (0..N_THREADS)
+            .map(|thread_id| {
+                let source = source.clone();
+                let sink = sink.clone();
+                spawn(move || {
+                    let source = source;
+                    let sink = sink;
+
+                    // Move stuff from source to sink
+                    while let Some(i) = pin(|pin| source.remove_front(pin)) {
+                        pin(|pin| sink.insert(i, pin));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for t in threads.into_iter() {
+            assert!(t.join().is_ok());
+        }
+        let mut v = Vec::with_capacity(N);
+        pin(|pin| while let Some(i) = sink.remove_front(pin) {
+            v.push(i);
+        });
+        v.sort();
+        for (i, n) in v.into_iter().enumerate() {
+            assert_eq!(i, n);
+        }
     }
 }

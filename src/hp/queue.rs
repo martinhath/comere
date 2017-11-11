@@ -6,8 +6,6 @@ use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
 use std::default::Default;
 use std::mem::{ManuallyDrop, drop};
 
-use super::*;
-
 use super::atomic::{Owned, Atomic, Ptr};
 
 #[derive(Debug)]
@@ -124,8 +122,7 @@ impl<T> Queue<T> {
                         drop(next_hp);
                         // While someone is using the head pointer, keep it here.
                         head_hp.wait();
-                        // Drop it when we can; `head` is no longer reachable.
-                        ::std::mem::drop(head.to_owned());
+                        head_hp.free();
                         ret
                     }
                     // TODO: we would rather want to loop here, instead of
@@ -159,7 +156,30 @@ impl<T> Queue<T> {
     }
 }
 
-
+impl<T> Drop for Queue<T> {
+    // TODO: find out what happens if we share the queue between threads. Is it possible that the
+    // threads is dropped in multiple threads? Also, if we drop the queue when other threads are
+    // reading the stuff, we should add the nodes to garbage. However, we also need to drop the
+    // data. What to do?
+    fn drop(&mut self) {
+        unsafe {
+            let mut ptr = self.head.load(SeqCst);
+            // The first node has no valid data - this is already returned by `pop`, and if nothing
+            // is popped it is uninitialized data.
+            let node = ptr.into_owned();
+            let next = node.next.load(SeqCst);
+            ::std::mem::drop(node);
+            ptr = next;
+            while !ptr.is_null() {
+                let mut node = ptr.into_owned();
+                let next = node.next.load(SeqCst);
+                ManuallyDrop::drop(&mut node.data);
+                ::std::mem::drop(node);
+                ptr = next;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -413,7 +433,6 @@ mod test {
                 let source = source.clone();
                 let sink = sink.clone();
                 spawn(move || {
-                    register_thread(thread_id);
                     let source = source;
                     let sink = sink;
 
@@ -465,25 +484,5 @@ mod test {
         for t in threads.into_iter() {
             assert!(t.join().is_ok());
         }
-    }
-}
-
-mod bench {
-    extern crate test;
-
-    #[bench]
-    fn insert(b: &mut test::Bencher) {
-        let list = super::Queue::new();
-        b.iter(|| { list.push(0usize); })
-    }
-
-    #[bench]
-    fn remove_front(b: &mut test::Bencher) {
-        const N: usize = 1024 * 1024;
-        let list = super::Queue::new();
-        for i in 0..N {
-            list.push(i);
-        }
-        b.iter(|| { list.pop(); });
     }
 }

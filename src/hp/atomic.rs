@@ -962,13 +962,13 @@ use hp::{NUM_HP, ThreadEntry, get_entry};
 use hp::get_thread_id;
 
 impl<T> HazardPtr<T> {
-    fn register(data: usize) -> Result<(), ()> {
+    fn register(&self) -> Result<(), ()> {
         let entry: &mut ThreadEntry = get_entry();
         entry.id = get_thread_id();
         for i in 0..NUM_HP {
             let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
             if hp == 0 {
-                entry.hazard_pointers[i].store(data, Ordering::SeqCst);
+                entry.hazard_pointers[i].store(self.data, Ordering::SeqCst);
                 return Ok(());
             }
         }
@@ -1012,20 +1012,29 @@ impl<T> HazardPtr<T> {
     }
 
     pub fn from_ptr(ptr: Ptr<T>) -> Self {
-        let p = ptr.data;
-        // TODO: as of now, running out of HPs is a hard error. This does  make sense to have, but
-        // maybe we'd like to make it a little more resillient?
-        assert!(Self::register(p).is_ok());
-        HazardPtr {
-            data: p,
+        let hp = Self  {
+            data: ptr.data,
             _marker: PhantomData,
-        }
+        };
+        hp.register();
+        hp
     }
 
     pub fn from_owned(ptr: Owned<T>) -> Self {
         // TODO: does this make sense? Maybe the HP should  know whether the value it has is owned
         // or not? Or maybe this is the responsibility of the caller?
         Self::from_ptr(ptr.into_ptr())
+    }
+
+    pub unsafe fn into_owned(self) -> Owned<T> {
+        Owned::from_data(self.data)
+    }
+
+    /// Free the data associated with the pointer. This should only be called when we know that we
+    /// are the only thread that is accessing the pointer. Usually we call this after
+    /// `HazardPtr::wait`.
+    pub unsafe fn free(self) {
+        ::std::mem::drop(self.into_owned());
     }
 }
 
