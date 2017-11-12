@@ -172,7 +172,10 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                     let res =
                         previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst, _pin);
                     match res {
-                        Ok(_) => return true,
+                        Ok(_) => {
+                            _pin.add_garbage(unsafe { current_ptr.into_owned() });
+                            return true;
+                        }
                         Err(_) => {
                             let pnp = previous_node_ptr.load(SeqCst, _pin);
                             // Some new node in inserted behind us.
@@ -294,6 +297,24 @@ mod test {
         for i in (0..N).rev() {
             let ret = pin(|pin| list.remove_front(pin));
             assert_eq!(ret, Some(i));
+        }
+        pin(|pin| assert_eq!(list.iter(pin).next(), None));
+    }
+
+    #[test]
+    fn remove() {
+        let list = List::new();
+        const N: usize = 32;
+        pin(|pin| for i in 0..N {
+            assert!(!list.insert(i, pin).is_null());
+        });
+        let mut ids = (0..N).collect::<Vec<_>>();
+        let mut rng = thread_rng();
+        rng.shuffle(&mut ids);
+
+        for i in (0..N).rev() {
+            let ret = pin(|pin| list.remove(&ids[i], pin));
+            assert!(ret);
         }
         pin(|pin| assert_eq!(list.iter(pin).next(), None));
     }

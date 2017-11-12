@@ -20,4 +20,3 @@ harness = false
 [[bench]]
 name = "list"
 harness = false
-

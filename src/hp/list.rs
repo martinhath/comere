@@ -256,6 +256,9 @@ impl<T> Drop for List<T> {
     fn drop(&mut self) {
         unsafe {
             let mut ptr = self.head.load(SeqCst);
+            if ptr.is_null() {
+                return;
+            }
             // The first node has no valid data - this is already returned by `pop`, and if nothing
             // is popped it is uninitialized data.
             let node = ptr.into_owned();
