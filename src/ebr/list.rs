@@ -8,7 +8,10 @@ pub struct Node<T> {
     pub next: Atomic<Node<T>>,
 }
 
-pub struct List<T> {
+pub struct List<T>
+where
+    T: 'static,
+{
     head: Atomic<Node<T>>,
 }
 
@@ -60,17 +63,19 @@ impl<T> List<T> {
     }
 
     /// Removes and returns the first element of the list, if any.
-    pub fn remove_front<'scope>(&self, _pin: Pin<'scope>) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed, _pin);
+    pub fn remove_front<'scope>(&self, pin: Pin<'scope>) -> Option<T> {
+        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed, pin);
         loop {
             if head_ptr.is_null() {
                 return None;
             }
             let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed, _pin);
-            match self.head.compare_and_set(head_ptr, next, Release, _pin) {
+            let next = head.next.load(Relaxed, pin).with_tag(0);
+            match self.head.compare_and_set(head_ptr, next, Release, pin) {
                 Ok(()) => {
                     let data = unsafe {::std::ptr::read(&head.data)};
+                    // add garbage here!!
+                    pin.add_garbage(unsafe{head_ptr.into_owned()});
                     return Some(ManuallyDrop::into_inner(data))
                 }
                 Err(new_head) => {
@@ -213,17 +218,37 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     }
 }
 
-impl<T> Drop for List<T> {
+impl<T> Drop for List<T>
+where
+    T: 'static,
+{
     fn drop(&mut self) {
         unsafe {
             pin(|pin| {
-                let mut ptr = self.head.load(SeqCst, pin);
-                // The first node has no valid data - this is already returned by `pop`, and if nothing
-                // is popped it is uninitialized data.
-                let node = ptr.into_owned();
-                let next = node.next.load(SeqCst, pin);
-                ::std::mem::drop(node);
-                ptr = next;
+                let head = {
+                    let head_ptr: Ptr<Node<T>> = self.head.load(SeqCst, pin);
+                    if head_ptr.is_null() {
+                        return;
+                    }
+                    // TODO: this is debug only! remove
+                    // swap some random ptr as head, so other threads fail.  If we get an error
+                    // that `128` is not a valid pointer, we have problems.
+                    let p = Ptr::from_raw(128 as *const Node<T>);
+                    let ret = self.head.compare_and_set(head_ptr, p, SeqCst, pin);
+                    if ret.is_err() {
+                        // someone changed head - we are not alone.
+                        panic!("we are fucked!");
+                    }
+                    head_ptr.into_owned()
+                };
+                // The first node has no valid data - this is already returned by `pop`, and if
+                // nothing is popped it is uninitialized data.
+                let next = head.next.load(SeqCst, pin);
+                // when we drop, no other thread should operate on the list (?), which means that
+                // all tags should be 0.
+                assert_eq!(next.tag(), 0);
+                pin.add_garbage(head);
+                let mut ptr = next;
                 while !ptr.is_null() {
                     let mut node: Owned<Node<T>> = ptr.into_owned();
                     let next = node.next.load(SeqCst, pin);
@@ -231,7 +256,7 @@ impl<T> Drop for List<T> {
                         let data: &mut ManuallyDrop<T> = &mut (*node).data;
                         ManuallyDrop::drop(data);
                     }
-                    ::std::mem::drop(node);
+                    pin.add_garbage(node);
                     ptr = next;
                 }
             })

@@ -68,7 +68,9 @@ impl CompareAndSetOrdering for (Ordering, Ordering) {
 /// Panics if the pointer is not properly unaligned.
 #[inline]
 fn ensure_aligned<T>(raw: *const T) {
-    assert_eq!(raw as usize & low_bits::<T>(), 0, "unaligned pointer");
+    if raw as usize & low_bits::<T>() != 0 {
+        panic!("unaligned pointer");
+    }
 }
 
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
