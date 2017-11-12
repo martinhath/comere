@@ -958,13 +958,10 @@ pub struct HazardPtr<T> {
 }
 
 use hp::{NUM_HP, ThreadEntry, get_entry};
-// TODO: debug, remove
-use hp::get_thread_id;
 
 impl<T> HazardPtr<T> {
     fn register(&self) -> Result<(), ()> {
         let entry: &mut ThreadEntry = get_entry();
-        entry.id = get_thread_id();
         for i in 0..NUM_HP {
             let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
             if hp == 0 {
@@ -1016,7 +1013,7 @@ impl<T> HazardPtr<T> {
             data: ptr.data,
             _marker: PhantomData,
         };
-        hp.register();
+        assert!(hp.register().is_ok());
         hp
     }
 

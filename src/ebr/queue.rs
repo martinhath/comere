@@ -185,7 +185,6 @@ where
                             }
                             Err(e) => None,
                         }
-
                     }
                 } else {
                     None

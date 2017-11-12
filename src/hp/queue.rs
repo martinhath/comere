@@ -103,6 +103,7 @@ impl<T> Queue<T> {
         let next_hp = next.hazard();
         {
             if h.next.load(Acquire) != next {
+                drop(head_hp);
                 drop(next_hp);
                 return self.pop();
             }

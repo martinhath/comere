@@ -8,7 +8,6 @@ pub mod list;
 
 use std::sync::atomic::AtomicUsize;
 
-
 /// The number of hazard pointers for each thread.
 const NUM_HP: usize = 3;
 
@@ -19,16 +18,14 @@ const NUM_HP: usize = 3;
 #[derive(Debug)]
 struct ThreadEntry {
     hazard_pointers: [AtomicUsize; NUM_HP],
-    id: usize,
 }
 
 impl ThreadEntry {
-    fn new(id: usize) -> Self {
+    fn new() -> Self {
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
             let mut entry = Self {
                 hazard_pointers: ::std::mem::uninitialized(),
-                id,
             };
             use std::ptr::write;
             for i in 0..NUM_HP {
@@ -46,16 +43,13 @@ thread_local! {
     static ENTRY_PTR: RefCell<atomic::Ptr<'static, ThreadEntry>> = {
         RefCell::new(atomic::Ptr::null())
     };
-    static LOCAL_ID: RefCell<usize> = {
-        RefCell::new(0)
-    }
 }
 
 /// Get a reference to the current threads entry in the global list. If this entry is not
 /// created yet, create it, and add it to the list.
 fn get_entry() -> &'static mut ThreadEntry {
     let p: atomic::Ptr<ThreadEntry> = ENTRY_PTR.with(|ptr| if ptr.borrow().is_null() {
-        let p = ENTRIES.insert(ThreadEntry::new(get_thread_id()));
+        let p = ENTRIES.insert(ThreadEntry::new());
         *ptr.borrow_mut() = p;
         p
     } else {
@@ -70,14 +64,4 @@ lazy_static! {
     static ref ENTRIES: list::List<ThreadEntry> = {
         list::List::new()
     };
-}
-
-// TODO: remove debug
-pub fn register_thread(i: usize) {
-    LOCAL_ID.with(|l| *l.borrow_mut() = i);
-}
-
-// TODO: remove debug
-pub fn get_thread_id() -> usize {
-    LOCAL_ID.with(|l| *l.borrow())
 }

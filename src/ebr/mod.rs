@@ -246,6 +246,37 @@ impl GlobalState {
         self.garbage.push((epoch, bag), _pin);
     }
 
+    fn free_garbage<'scope>(&self, current_epoch: usize, pin: Pin<'scope>) {
+        while let Some((e, mut bag)) =
+            self.garbage.pop_if(
+                |&(e, _)| current_epoch.saturating_sub(e) >= 2,
+                pin,
+            )
+        {
+            // TODO: share this among other threads. Find out a good way to do this.
+            // Idea: set the global state to something, eg. use a second lower bit in `epoch`
+            // to signal that we are in "freeing mode". Then all threads calling 'pin' will be
+            // set to pull out garbage from the queue, as long as there is more left.
+            //
+            // Since we've popped the bag from the queue, this thread is the only thread
+            // accessing the bag. This isn't true in general, since `pop_if` accesses the bag,
+            // and can read whatever it wants. However, we only use `pop_if` in one place, and
+            // that place only reads the `epoch` field.
+            for i in 0..bag.index {
+                if let Some(garbage) = bag.data[i].take() {
+                    // This is where we free the memory of the nodes the data strucutres make.
+                    // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`, or
+                    // it is `queue::Node<Bag>`, if it is the list we use for reclamation.
+                    ::std::mem::drop(garbage);
+                } else {
+                    break;
+                }
+            }
+            // assert that all bags are empty. Then dropping the bag is a noop.
+            bag.drop();
+        }
+    }
+
     /// Increments the current epoch and puts all garbage in the safe-to-free garbare queue.
     fn increment_epoch<'scope>(&self, epoch: usize, pin: Pin<'scope>) {
         // Try to increment the epoch.
@@ -261,35 +292,7 @@ impl GlobalState {
             // that we've read the newly incremented epoch. Hence, other threads only see that we
             // have seen epoch `epoch`.
             let current_epoch = epoch + 1;
-            let thread_id = get_thread_id();
-            while let Some((e, mut bag)) =
-                self.garbage.pop_if(
-                    |&(e, _)| current_epoch.saturating_sub(e) >= 2,
-                    pin,
-                )
-            {
-                // TODO: share this among other threads. Find out a good way to do this.
-                // Idea: set the global state to something, eg. use a second lower bit in `epoch`
-                // to signal that we are in "freeing mode". Then all threads calling 'pin' will be
-                // set to pull out garbage from the queue, as long as there is more left.
-                //
-                // Since we've popped the bag from the queue, this thread is the only thread
-                // accessing the bag. This isn't true in general, since `pop_if` accesses the bag,
-                // and can read whatever it wants. However, we only use `pop_if` in one place, and
-                // that place only reads the `epoch` field.
-                for i in 0..bag.index {
-                    if let Some(garbage) = bag.data[i].take() {
-                        // This is where we free the memory of the nodes the data strucutres make.
-                        // The `bag` contains `garbage`, which is either eg. `queue::Node<T>`, or
-                        // it is `queue::Node<Bag>`, if it is the list we use for reclamation.
-                        ::std::mem::drop(garbage);
-                    } else {
-                        break;
-                    }
-                }
-                // assert that all bags are empty. Then dropping the bag is a noop.
-                bag.drop();
-            }
+            self.free_garbage(current_epoch, pin);
         }
     }
 }
@@ -434,6 +437,21 @@ where
     let ret = f(p);
     marker.unpin();
     ret
+}
+
+
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    #[test]
+    fn add_garbage() {
+        const N: usize = 1024 * 32;
+        for _ in 0..N {
+            pin(|pin| pin.add_garbage(atomic::Owned::new(0usize)));
+        }
+    }
 }
 
 mod bench {
