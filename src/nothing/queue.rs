@@ -77,12 +77,15 @@ impl<T> Queue<T> {
         self.tail.compare_and_set(tail, node, Release).ok();
     }
 
-    pub fn push(&self, t: T) {
+    pub fn push(&self, t: T, node_ptr: *mut Owned<Node<T>>) {
         let node = Owned::new(Node {
             data: Some(t),
             next: Default::default(),
         });
         let new_node = node.into_ptr();
+        unsafe {
+            ::std::ptr::write(node_ptr, new_node.clone().into_owned());
+        }
         loop {
             let tail = self.tail.load(Acquire);
             let t = unsafe { tail.deref() };

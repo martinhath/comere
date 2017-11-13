@@ -5,14 +5,26 @@ extern crate comere;
 use bencher::Bencher;
 
 mod nothing {
+    //! See comment in `benches/list.rs:nothing`.
     use super::Bencher;
     use comere::nothing::queue::Queue;
+    use comere::nothing::atomic::Owned;
+    use comere::nothing::queue::Node;
 
     pub fn push(b: &mut Bencher) {
         const N: u64 = 1024 * 1024;
         b.bench_n(N, |_b| {
             let queue = Queue::new();
-            _b.iter(|| { queue.push(0usize); });
+            let mut ptrs: Vec<Owned<Node<usize>>> = Vec::with_capacity(N as usize);
+            let ptr = ptrs.as_mut_ptr();
+            let mut i = 0;
+            _b.iter(|| {
+                queue.push(0usize, unsafe { ptr.offset(i) });
+                i += 1;
+            });
+            unsafe {
+                ptrs.set_len(N as usize);
+            }
         });
     }
 
@@ -20,13 +32,20 @@ mod nothing {
         const N: u64 = 1024 * 1024;
         b.bench_n(N, |_b| {
             let queue = Queue::new();
+            let mut ptrs: Vec<Owned<Node<u64>>> = Vec::with_capacity(N as usize);
+            let ptr = ptrs.as_mut_ptr();
+            let mut c = 0;
             for i in 0..N {
-                queue.push(i);
+                queue.push(i, unsafe { ptr.offset(c) });
+                c += 1
             }
             _b.iter(|| {
                 let ret = queue.pop();
                 assert!(ret.unwrap() < N);
             });
+            unsafe {
+                ptrs.set_len(N as usize);
+            }
         });
     }
 }
