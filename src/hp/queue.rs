@@ -34,6 +34,10 @@ impl<T> Node<T> {
             next: Default::default(),
         }
     }
+
+    fn data(&self) -> &T {
+        &*self.data
+    }
 }
 
 impl<T> Queue<T> {
@@ -57,17 +61,21 @@ impl<T> Queue<T> {
             let tail_hp = tail.hazard();
             {
                 if self.tail.load(Acquire) != tail {
-                    drop(tail_hp);
+                    println!("[push] validate failed");
                     continue;
                 }
             }
             let t = unsafe { tail.deref() };
             let next = t.next.load(Acquire);
+            // NO LOOPS!
+            assert!(next != tail);
             if unsafe { next.as_ref().is_some() } {
                 // tail wasnt't tail after all.
                 // We try to help out by moving the tail pointer
                 // on queue to the real tail we've seen, which is `next`.
                 let _ = self.tail.compare_and_set(tail, next, Release);
+                println!("[push] tail wasn't tail");
+                println!("{:x} != {:x}", self.tail.load(SeqCst).data, tail.data);
             } else {
                 let succ = t.next
                     .compare_and_set(Ptr::null(), new_node, Release)
@@ -78,6 +86,8 @@ impl<T> Queue<T> {
                     // thread could have helped by moving the tail pointer.
                     let _ = self.tail.compare_and_set(tail, new_node, Release);
                     break;
+                } else {
+                    println!("[push] failed to set Q.tail");
                 }
             }
         }
@@ -135,6 +145,95 @@ impl<T> Queue<T> {
         }
     }
 
+    pub fn push_node(&self, node: Owned<Node<T>>) {
+        let new_node = node.into_ptr();
+        loop {
+            let tail: Ptr<Node<T>> = self.tail.load(Acquire);
+            let tail_hp = tail.hazard();
+            {
+                if self.tail.load(Acquire) != tail {
+                    drop(tail_hp);
+                    println!("hp validate fail");
+                    continue;
+                }
+            }
+            let t = unsafe { tail.deref() };
+            let next = t.next.load(Acquire);
+            assert!(next != tail);
+            if unsafe { next.as_ref().is_some() } {
+                // tail wasnt't tail after all.
+                // We try to help out by moving the tail pointer
+                // on queue to the real tail we've seen, which is `next`.
+                let _res = self.tail.compare_and_set(tail, next, Release);
+                println!("tail was changed. move tail ptr");
+                if let Err(r) = _res {
+                    println!("-> {:?} ==> {:?}", tail.data, next.data);
+                    println!("   Q.tail = {:?}", self.tail.load(SeqCst).data);
+                }
+            } else {
+                let succ = t.next
+                    .compare_and_set(Ptr::null(), new_node, Release)
+                    .is_ok();
+                if succ {
+                    // the CAS succeded, and the new node is linked into the list.
+                    // Update `queue.tail`. If we fail here it's OK, since another
+                    // thread could have helped by moving the tail pointer.
+                    let _ = self.tail.compare_and_set(tail, new_node, Release);
+                    break;
+                } else {
+                    println!("failed to set tail.next.")
+                }
+            }
+        }
+    }
+
+
+    pub fn pop_node(&self) -> Option<Owned<Node<T>>> {
+        'outer: loop {
+            let head: Ptr<Node<T>> = self.head.load(Acquire);
+            let head_hp = head.hazard();
+            // validate:
+            {
+                let new_head: Ptr<Node<T>> = self.head.load(Acquire);
+                // If head changed after registering, restart.
+                if head != new_head {
+                    continue 'outer;
+                }
+            }
+            let h: &Node<T> = unsafe { head.deref() };
+            let next: Ptr<Node<T>> = h.next.load(Acquire);
+            if next.is_null() {
+                return None;
+            }
+            let next_hp = next.hazard();
+            {
+                if h.next.load(Acquire) != next {
+                    continue 'outer;
+                }
+            }
+            return match unsafe { next.as_ref() } {
+                Some(node) => unsafe {
+                    // TODO: do we need this to be a HP as well?
+                    let new_next = node.next.load(SeqCst);
+                    let res = h.next.compare_and_set(next, new_next, SeqCst);
+                    match res {
+                        Ok(()) => {
+                            drop(next_hp);
+                            head_hp.wait();
+                            // Reset the next field on the node we are returning.
+                            node.next.store(Ptr::null(), SeqCst);
+                            Some(next.into_owned())
+                        }
+                        // TODO: we would rather want to loop here, instead of giving up if there
+                        // is contention?
+                        Err(e) => None,
+                    }
+                },
+                None => None,
+            };
+        }
+    }
+
     /// Count the number of elements in the queue.
     /// This is typically not a operation we need,
     /// but it is practical to have for testing
@@ -174,7 +273,7 @@ impl<T> Drop for Queue<T> {
             while !ptr.is_null() {
                 let mut node = ptr.into_owned();
                 let next = node.next.load(SeqCst);
-                ManuallyDrop::drop(&mut node.data);
+                ManuallyDrop::drop(&mut (*node).data);
                 ::std::mem::drop(node);
                 ptr = next;
             }
@@ -368,51 +467,17 @@ mod test {
         }
     }
 
-    // #[test]
-    // fn is_unique_receiver_if() {
-    //     const N_THREADS: usize = 16;
-    //     const ELEMS: usize = 512 * 512;
+    #[test]
+    fn pop_node() {
+        const N: usize = 4;
+        let q = Queue::new();
+        for i in 0..N {
+            q.push(i);
+        }
 
-    //     let q = Arc::new(Queue::new());
-    //     // Markers to check.
-    //     let markers = Arc::new(
-    //         (0..ELEMS)
-    //             .map(|_| AtomicBool::new(false))
-    //             .collect::<Vec<_>>(),
-    //     );
-    //     // Fill the queue with all numbers
-    //     for i in 0..ELEMS {
-    //         q.push(i);
-    //     }
-
-    //     // Each threads pops something until the queue is empty,
-    //     // and CASes the element they got back in `markers`.
-    //     // If any CAS fails, we've returned the same element to two
-    //     // threads, which should not happen, since all nubmers are only
-    //     // once in the queue.
-    //     let threads = (0..N_THREADS)
-    //         .map(|i| {
-    //             let markers = markers.clone();
-    //             let q = q.clone();
-    //             spawn(move || {
-    //                 while let Some(i) = q.pop_if(|_| true) {
-    //                     let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
-    //                     assert_eq!(ret, false);
-    //                 }
-    //             })
-    //         })
-    //         .collect::<Vec<_>>();
-
-    //     // Wait for all threads to finish
-    //     for t in threads.into_iter() {
-    //         assert!(t.join().is_ok());
-    //     }
-
-    //     // Check that all elements were returned from the queue
-    //     for m in markers.iter() {
-    //         assert!(m.load(Ordering::SeqCst));
-    //     }
-    // }
+        let node = q.pop_node().expect("pop_node returned None");
+        assert_eq!(*node.data(), 0);
+    }
 
     #[test]
     fn stress_test() {

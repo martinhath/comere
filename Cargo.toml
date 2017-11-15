@@ -20,3 +20,9 @@ harness = false
 [[bench]]
 name = "list"
 harness = false
+
+[features]
+default = []
+# Should the HP implmementation repeatedly scan and wait for other threads to unregister a HP when
+# we want to drop that HP?
+hp-wait = []

@@ -19,7 +19,7 @@ mod nothing {
             let ptr = ptrs.as_mut_ptr();
             let mut i = 0;
             _b.iter(|| {
-                queue.push(0usize, unsafe { ptr.offset(i) });
+                queue.push(0usize, Some(unsafe { ptr.offset(i) }));
                 i += 1;
             });
             unsafe {
@@ -36,7 +36,7 @@ mod nothing {
             let ptr = ptrs.as_mut_ptr();
             let mut c = 0;
             for i in 0..N {
-                queue.push(i, unsafe { ptr.offset(c) });
+                queue.push(i, Some(unsafe { ptr.offset(c) }));
                 c += 1
             }
             _b.iter(|| {

@@ -41,7 +41,7 @@ fn data_with_tag<T>(data: usize, tag: usize) -> usize {
 /// [`Scope`]: struct.Scope.html
 #[derive(Debug)]
 pub struct Atomic<T> {
-    data: AtomicUsize,
+    pub data: AtomicUsize,
     _marker: PhantomData<*mut T>,
 }
 
@@ -506,7 +506,7 @@ impl<'scope, T> From<Ptr<'scope, T>> for Atomic<T> {
 /// least significant bits of the address.
 #[derive(Debug)]
 pub struct Owned<T> {
-    data: usize,
+    pub data: usize,
     _marker: PhantomData<Box<T>>,
 }
 
@@ -622,6 +622,10 @@ impl<T> Owned<T> {
         mem::forget(self);
         unsafe { Self::from_data(data_with_tag::<T>(data, tag)) }
     }
+
+    pub fn hazard(self) -> HazardPtr<T> {
+        HazardPtr::from_owned(self)
+    }
 }
 
 impl<T> Drop for Owned<T> {
@@ -691,7 +695,7 @@ impl<T> AsMut<T> for Owned<T> {
 /// least significant bits of the address.
 #[derive(Debug)]
 pub struct Ptr<'scope, T: 'scope> {
-    data: usize,
+    pub data: usize,
     _marker: PhantomData<(&'scope (), *const T)>,
 }
 
@@ -1001,6 +1005,7 @@ impl<T> HazardPtr<T> {
     // TODO: name
     /// Spin until no other threads have registered the current pointer as hazardous. This should
     /// only be called after making the data unreachable, or else we risk spinning forever.
+    #[cfg(feature = "hp-wait")]
     pub fn wait(&self) {
         assert!(self.deregister().is_ok());
         while self.scan() {
@@ -1008,19 +1013,59 @@ impl<T> HazardPtr<T> {
         }
     }
 
-    pub fn from_ptr(ptr: Ptr<T>) -> Self {
-        let hp = Self  {
-            data: ptr.data,
+    #[cfg(not(feature = "hp-wait"))]
+    pub fn wait(&self) {}
+
+    fn from_raw(ptr: usize) -> Self {
+        let hp = Self {
+            data: ptr,
             _marker: PhantomData,
         };
         assert!(hp.register().is_ok());
         hp
     }
 
+    fn fake(ptr: usize) -> Self {
+        Self {
+            data: ptr,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Return whether it is time for this thread to try to free some hazard pointers from the
+    /// global queue.
+    #[cfg(not(feature = "hp-wait"))]
+    fn should_clean_up() -> bool {
+        true
+    }
+
+    /// Try to clean up some hazard pointers from the global queue.
+    #[cfg(not(feature = "hp-wait"))]
+    fn clean_up() {
+        // Maybe we should have the option to return the whole node, so we don't have to allocate
+        // and deallocate all the time? We should probably not use `pop_if`, since a single pointer
+        // will block the entire reclamation.
+        if let Some(owned) = super::HAZARD_QUEUE.pop_node() {
+            let hp: HazardPtr<usize> = HazardPtr::fake(owned.data);
+            if hp.scan() {
+                // Someone is using it. Push it back.
+                println!("push back hp at 0x{:x}", owned.data);
+                super::HAZARD_QUEUE.push_node(owned);
+                println!("  push back done");
+            } else {
+                println!("drop hp at 0x{:x}", hp.data);
+                drop(unsafe { hp.into_owned() });
+                println!("  drop done");
+            }
+        }
+    }
+
+    pub fn from_ptr(ptr: Ptr<T>) -> Self {
+        Self::from_raw(ptr.as_raw() as usize)
+    }
+
     pub fn from_owned(ptr: Owned<T>) -> Self {
-        // TODO: does this make sense? Maybe the HP should  know whether the value it has is owned
-        // or not? Or maybe this is the responsibility of the caller?
-        Self::from_ptr(ptr.into_ptr())
+        Self::from_raw(ptr.into_ptr().as_raw() as usize)
     }
 
     pub unsafe fn into_owned(self) -> Owned<T> {
@@ -1030,8 +1075,19 @@ impl<T> HazardPtr<T> {
     /// Free the data associated with the pointer. This should only be called when we know that we
     /// are the only thread that is accessing the pointer. Usually we call this after
     /// `HazardPtr::wait`.
+    #[cfg(feature = "hp-wait")]
     pub unsafe fn free(self) {
         ::std::mem::drop(self.into_owned());
+    }
+
+    #[cfg(not(feature = "hp-wait"))]
+    pub unsafe fn free(self) {
+        println!("free hp at 0x{:x}", self.data);
+        super::HAZARD_QUEUE.push(self.data);
+        println!("  after push for 0x{:x}", self.data);
+        if Self::should_clean_up() {
+            Self::clean_up();
+        }
     }
 }
 

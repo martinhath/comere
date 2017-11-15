@@ -77,14 +77,16 @@ impl<T> Queue<T> {
         self.tail.compare_and_set(tail, node, Release).ok();
     }
 
-    pub fn push(&self, t: T, node_ptr: *mut Owned<Node<T>>) {
+    pub fn push(&self, t: T, node_ptr: Option<*mut Owned<Node<T>>>) {
         let node = Owned::new(Node {
             data: Some(t),
             next: Default::default(),
         });
         let new_node = node.into_ptr();
-        unsafe {
-            ::std::ptr::write(node_ptr, new_node.clone().into_owned());
+        if let Some(node_ptr) = node_ptr {
+            unsafe {
+                ::std::ptr::write(node_ptr, new_node.clone().into_owned());
+            }
         }
         loop {
             let tail = self.tail.load(Acquire);
@@ -179,15 +181,15 @@ mod test {
     #[test]
     fn st_queue_push() {
         let q: Queue<Payload> = Queue::new();
-        q.push(Payload::new());
-        q.push(Payload::new());
-        q.push(Payload::new());
+        q.push(Payload::new(), None);
+        q.push(Payload::new(), None);
+        q.push(Payload::new(), None);
     }
 
     #[test]
     fn st_queue_push_pop() {
         let q: Queue<u32> = Queue::new();
-        q.push(1);
+        q.push(1, None);
         let r = q.pop();
         assert_eq!(r, Some(1));
         assert_eq!(q.pop(), None);
@@ -197,7 +199,7 @@ mod test {
     fn st_queue_push_pop_many() {
         let q: Queue<u32> = Queue::new();
         for i in 0..100 {
-            q.push(i);
+            q.push(i, None);
         }
         for i in 0..100 {
             assert_eq!(q.pop(), Some(i));
@@ -209,7 +211,7 @@ mod test {
     fn st_queue_len() {
         let q: Queue<Payload> = Queue::new();
         for i in 0..10 {
-            q.push(Payload::new());
+            q.push(Payload::new(), None);
         }
         assert_eq!(q.len(), 10);
     }
@@ -242,7 +244,7 @@ mod bench {
     #[bench]
     fn queue_push(b: &mut test::Bencher) {
         let q = super::Queue::new();
-        b.iter(|| { q.push(0); });
+        b.iter(|| { q.push(0, None); });
     }
 
     #[bench]

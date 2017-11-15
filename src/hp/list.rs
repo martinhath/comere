@@ -143,11 +143,11 @@ where
             let mut prev_handle: Option<HazardPtr<::hp::list::Node<T>>> = None;
 
             loop {
-                let curr_handle = current_ptr.hazard();
+                let curr_hp = current_ptr.hazard();
                 // validate
                 {
                     if previous_node_ptr.load(SeqCst) != current_ptr {
-                        drop(curr_handle); // explicit drop here. Do we need it?
+                        drop(curr_hp); // explicit drop here. Do we need it?
                         // println!("remove::validate failed. restart.");
                         continue 'outer;
                     }
@@ -175,7 +175,7 @@ where
                         Ok(_) => {
                             // Now `current` is not reachable from the list.
                             // TODO(6.11.17): have a way to do this in one operation?
-                            curr_handle.wait();
+                            curr_hp.wait();
                             unsafe {
                                 // Since we have made the node unreachable, and
                                 // no thread has registered it as hazardous, it
@@ -206,7 +206,7 @@ where
                     previous_node_ptr = &current.next;
                     current_ptr = current.next.load(SeqCst).with_tag(0);
                     prev_handle.take().map(::std::mem::drop);
-                    prev_handle = Some(curr_handle);
+                    prev_handle = Some(curr_hp);
 
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.

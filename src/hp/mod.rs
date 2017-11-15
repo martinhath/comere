@@ -24,9 +24,7 @@ impl ThreadEntry {
     fn new() -> Self {
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
-            let mut entry = Self {
-                hazard_pointers: ::std::mem::uninitialized(),
-            };
+            let mut entry = Self { hazard_pointers: ::std::mem::uninitialized() };
             use std::ptr::write;
             for i in 0..NUM_HP {
                 write(&mut entry.hazard_pointers[i], AtomicUsize::new(0));
@@ -63,5 +61,13 @@ lazy_static! {
     /// and have a local pointer to its entry.
     static ref ENTRIES: list::List<ThreadEntry> = {
         list::List::new()
+    };
+
+}
+
+#[cfg(not(feature = "hp-wait"))]
+lazy_static! {
+    static ref HAZARD_QUEUE: queue::Queue<usize> = {
+        queue::Queue::new()
     };
 }

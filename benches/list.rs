@@ -26,7 +26,7 @@ pub mod nothing {
             let ptr = ptrs.as_mut_ptr();
             let mut i = 0;
             _b.iter(|| {
-                list.insert(0usize, unsafe { ptr.offset(i) });
+                list.insert(0usize, Some(unsafe { ptr.offset(i) }));
                 i += 1;
             });
             unsafe {
@@ -43,7 +43,7 @@ pub mod nothing {
             let ptr = ptrs.as_mut_ptr();
             let mut c = 0;
             for i in 0..N {
-                list.insert(i, unsafe { ptr.offset(c) });
+                list.insert(i, Some(unsafe { ptr.offset(c) }));
                 c += 1;
             }
             _b.iter(|| {

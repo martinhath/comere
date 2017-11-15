@@ -30,7 +30,7 @@ mod test {
 
     use std::sync::atomic::Ordering::SeqCst;
     use std::thread::spawn;
-    use std::sync::{Arc, Mutex, Barrier};
+    use std::sync::{Arc, Barrier};
 
     const N_THREADS: usize = 4;
 

@@ -27,10 +27,12 @@ impl<T> List<T> {
     }
 
     /// Insert into the head of the list
-    pub fn insert(&self, data: T, node_ptr: *mut Owned<Node<T>>) {
+    pub fn insert(&self, data: T, node_ptr: Option<*mut Owned<Node<T>>>) {
         let curr_ptr: Ptr<Node<T>> = Owned::new(Node::new(data)).into_ptr();
-        unsafe {
-            ::std::ptr::write(node_ptr, curr_ptr.clone().into_owned());
+        if let Some(node_ptr) = node_ptr {
+            unsafe {
+                ::std::ptr::write(node_ptr, curr_ptr.clone().into_owned());
+            }
         }
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
         let mut head = self.head.load(Relaxed);
