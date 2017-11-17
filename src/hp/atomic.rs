@@ -1054,6 +1054,12 @@ impl<T> HazardPtr<T> {
                 println!("  push back done");
             } else {
                 println!("drop hp at 0x{:x}", hp.data);
+                // This doesnt work! head can be read by some other thread, so we need to use HPs
+                // on this as well. This means that we also need to chunk up the HPs. Eventually we
+                // can have a thread local queue. Then the nodes can be freed when popped, since
+                // the queue is thread local. This is also somewhat more fair, since the threads
+                // that allocate stuff must also free it. Maybe this is negative for performance,
+                // since active threads must also collect a lot of stuff? Profile?
                 drop(unsafe { hp.into_owned() });
                 println!("  drop done");
             }

@@ -67,7 +67,6 @@ impl<T> Queue<T> {
             }
             let t = unsafe { tail.deref() };
             let next = t.next.load(Acquire);
-            // NO LOOPS!
             assert!(next != tail);
             if unsafe { next.as_ref().is_some() } {
                 // tail wasnt't tail after all.
@@ -306,15 +305,6 @@ mod test {
         q.push(Payload::new());
         q.push(Payload::new());
         q.push(Payload::new());
-    }
-
-    #[test]
-    fn st_queue_push_pop() {
-        let q: Queue<u32> = Queue::new();
-        q.push(1);
-        let r = q.pop();
-        assert_eq!(r, Some(1));
-        assert_eq!(q.pop(), None);
     }
 
     #[test]
