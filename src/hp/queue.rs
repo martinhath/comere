@@ -16,7 +16,7 @@ pub struct Queue<T> {
 
 #[derive(Debug)]
 pub struct Node<T> {
-    data: ManuallyDrop<T>,
+    pub data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
@@ -40,7 +40,10 @@ impl<T> Node<T> {
     }
 }
 
-impl<T> Queue<T> {
+impl<T> Queue<T>
+where
+    T: 'static,
+{
     pub fn new() -> Self {
         let sentinel = Owned::new(Node::empty());
         let ptr = sentinel.into_ptr();
@@ -57,6 +60,7 @@ impl<T> Queue<T> {
         let node = Owned::new(Node::new(t));
         let new_node = node.into_ptr();
         loop {
+            // TODO: what's up with orderings here?
             let tail: Ptr<Node<T>> = self.tail.load(Acquire);
             let tail_hp = tail.hazard();
             {
@@ -131,7 +135,6 @@ impl<T> Queue<T> {
                         let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
                         drop(next_hp);
                         // While someone is using the head pointer, keep it here.
-                        head_hp.wait();
                         head_hp.free();
                         ret
                     }
@@ -218,7 +221,7 @@ impl<T> Queue<T> {
                     match res {
                         Ok(()) => {
                             drop(next_hp);
-                            head_hp.wait();
+                            head_hp.spin();
                             // Reset the next field on the node we are returning.
                             node.next.store(Ptr::null(), SeqCst);
                             Some(next.into_owned())

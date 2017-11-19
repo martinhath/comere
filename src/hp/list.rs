@@ -26,7 +26,10 @@ impl<T> Node<T> {
     }
 }
 
-impl<T> List<T> {
+impl<T> List<T>
+where
+    T: 'static,
+{
     pub fn new() -> Self {
         Self { head: Atomic::null() }
     }
@@ -117,7 +120,7 @@ impl<T> List<T> {
 
 impl<T> List<T>
 where
-    T: Eq + ::std::fmt::Debug,
+    T: 'static + Eq + ::std::fmt::Debug,
 {
     /// Remove the first node in the list where `node.data == key`
     ///

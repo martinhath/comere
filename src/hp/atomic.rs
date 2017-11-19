@@ -991,7 +991,7 @@ impl<T> HazardPtr<T> {
     // TODO: name
     /// Check if the pointer is marked as hazardous by any other thread. This should only be called
     /// after deregistering, or else we will report itself.
-    fn scan(&self) -> bool {
+    pub fn scan(&self) -> bool {
         for e in ::hp::ENTRIES.iter() {
             for p in e.hazard_pointers.iter() {
                 if self.data == p.load(Ordering::SeqCst) {
@@ -1016,6 +1016,13 @@ impl<T> HazardPtr<T> {
     #[cfg(not(feature = "hp-wait"))]
     pub fn wait(&self) {}
 
+    pub fn spin(&self) {
+        assert!(self.deregister().is_ok());
+        while self.scan() {
+            ::std::thread::yield_now();
+        }
+    }
+
     fn from_raw(ptr: usize) -> Self {
         let hp = Self {
             data: ptr,
@@ -1025,44 +1032,10 @@ impl<T> HazardPtr<T> {
         hp
     }
 
-    fn fake(ptr: usize) -> Self {
+    pub fn fake(ptr: usize) -> Self {
         Self {
             data: ptr,
             _marker: PhantomData,
-        }
-    }
-
-    /// Return whether it is time for this thread to try to free some hazard pointers from the
-    /// global queue.
-    #[cfg(not(feature = "hp-wait"))]
-    fn should_clean_up() -> bool {
-        true
-    }
-
-    /// Try to clean up some hazard pointers from the global queue.
-    #[cfg(not(feature = "hp-wait"))]
-    fn clean_up() {
-        // Maybe we should have the option to return the whole node, so we don't have to allocate
-        // and deallocate all the time? We should probably not use `pop_if`, since a single pointer
-        // will block the entire reclamation.
-        if let Some(owned) = super::HAZARD_QUEUE.pop_node() {
-            let hp: HazardPtr<usize> = HazardPtr::fake(owned.data);
-            if hp.scan() {
-                // Someone is using it. Push it back.
-                println!("push back hp at 0x{:x}", owned.data);
-                super::HAZARD_QUEUE.push_node(owned);
-                println!("  push back done");
-            } else {
-                println!("drop hp at 0x{:x}", hp.data);
-                // This doesnt work! head can be read by some other thread, so we need to use HPs
-                // on this as well. This means that we also need to chunk up the HPs. Eventually we
-                // can have a thread local queue. Then the nodes can be freed when popped, since
-                // the queue is thread local. This is also somewhat more fair, since the threads
-                // that allocate stuff must also free it. Maybe this is negative for performance,
-                // since active threads must also collect a lot of stuff? Profile?
-                drop(unsafe { hp.into_owned() });
-                println!("  drop done");
-            }
         }
     }
 
@@ -1077,23 +1050,28 @@ impl<T> HazardPtr<T> {
     pub unsafe fn into_owned(self) -> Owned<T> {
         Owned::from_data(self.data)
     }
+}
 
-    /// Free the data associated with the pointer. This should only be called when we know that we
-    /// are the only thread that is accessing the pointer. Usually we call this after
-    /// `HazardPtr::wait`.
+impl<T> HazardPtr<T>
+where
+    T: 'static,
+{
+    /// Frees the pointer. Should only be called after making sure that no other thread can get a
+    /// reference to this pointer. That is, one should make it non-reachable.
     #[cfg(feature = "hp-wait")]
     pub unsafe fn free(self) {
-        ::std::mem::drop(self.into_owned());
+        // While some thread has marked this, spin.
+        self.deregister();
+        while self.scan() {
+            ::std::thread::yield_now();
+        }
+        self.into_owned()
     }
 
     #[cfg(not(feature = "hp-wait"))]
     pub unsafe fn free(self) {
-        println!("free hp at 0x{:x}", self.data);
-        super::HAZARD_QUEUE.push(self.data);
-        println!("  after push for 0x{:x}", self.data);
-        if Self::should_clean_up() {
-            Self::clean_up();
-        }
+        super::defer_hp(self);
+        super::free_from_queue();
     }
 }
 

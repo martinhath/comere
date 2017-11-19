@@ -8,13 +8,15 @@ pub mod list;
 
 use std::sync::atomic::AtomicUsize;
 
+use self::atomic::{Owned, HazardPtr};
+use std::mem::{forget, drop, ManuallyDrop};
+
+
 /// The number of hazard pointers for each thread.
 const NUM_HP: usize = 3;
 
 /// Data each thread needs to keep track of the hazard pointers.  We must use atomics here; if we
 /// do not we will have race conditions when one threads scans, and another thread edits its entry.
-///
-/// We mark the entry with the thread id, for debugging. TODO: remove.
 #[derive(Debug)]
 struct ThreadEntry {
     hazard_pointers: [AtomicUsize; NUM_HP],
@@ -65,9 +67,58 @@ lazy_static! {
 
 }
 
+struct Garbage(Box<FnOnce()>);
+
+unsafe impl Send for Garbage {}
+unsafe impl Sync for Garbage {}
+
+impl Garbage {
+    /// Make a new `Garbage` object given the data `t`.
+    fn new<T>(t: Owned<T>) -> Self
+    where
+        T: 'static,
+    {
+        let d = t.data;
+        Garbage(Box::new(move || { ::std::mem::forget(t); }))
+    }
+}
+
+
 #[cfg(not(feature = "hp-wait"))]
 lazy_static! {
-    static ref HAZARD_QUEUE: queue::Queue<usize> = {
+    // This queue is `usize`, because we do not know what type the HP is pointing to.
+    static ref HAZARD_QUEUE: queue::Queue<Garbage> = {
         queue::Queue::new()
     };
+}
+
+fn defer_hp<T>(hp: atomic::HazardPtr<T>)
+where
+    T: 'static,
+{
+    unsafe {
+        HAZARD_QUEUE.push(Garbage::new(hp.into_owned()));
+    }
+}
+
+fn free_from_queue() {
+    const N: usize = 3;
+    for _ in 0..N {
+        if let Some(mut owned_ptr) = HAZARD_QUEUE.pop_node() {
+            let hp: HazardPtr<Garbage> = HazardPtr::fake(owned_ptr.data);
+            if hp.scan() {
+                // used
+                HAZARD_QUEUE.push_node(owned_ptr);
+            } else {
+                forget(hp);
+                {
+                    let mut node: &mut queue::Node<Garbage> = &mut *owned_ptr;
+                    unsafe { ManuallyDrop::drop(&mut node.data) };
+                }
+                drop(owned_ptr);
+            }
+        } else {
+            return;
+        }
+    }
 }
