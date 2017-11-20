@@ -67,7 +67,7 @@ lazy_static! {
 
 }
 
-struct Garbage(Box<FnOnce()>);
+struct Garbage(Box<FnOnce()>, usize);
 
 unsafe impl Send for Garbage {}
 unsafe impl Sync for Garbage {}
@@ -79,7 +79,11 @@ impl Garbage {
         T: 'static,
     {
         let d = t.data;
-        Garbage(Box::new(move || { ::std::mem::forget(t); }))
+        Garbage(Box::new(move || { ::std::mem::forget(t); }), d)
+    }
+
+    fn address(&self) -> usize {
+        self.1
     }
 }
 
@@ -104,18 +108,18 @@ where
 fn free_from_queue() {
     const N: usize = 3;
     for _ in 0..N {
-        if let Some(mut owned_ptr) = HAZARD_QUEUE.pop_node() {
-            let hp: HazardPtr<Garbage> = HazardPtr::fake(owned_ptr.data);
-            if hp.scan() {
+        if let Some(garbage) = HAZARD_QUEUE.pop_hp_fn(|h| {
+            h.spin();
+            unsafe {
+                h.into_owned();
+            }
+        })
+        {
+            if HazardPtr::<()>::scan_addr(garbage.address()) {
                 // used
-                HAZARD_QUEUE.push_node(owned_ptr);
+                HAZARD_QUEUE.push(garbage);
             } else {
-                forget(hp);
-                {
-                    let mut node: &mut queue::Node<Garbage> = &mut *owned_ptr;
-                    unsafe { ManuallyDrop::drop(&mut node.data) };
-                }
-                drop(owned_ptr);
+                drop(garbage);
             }
         } else {
             return;

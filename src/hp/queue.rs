@@ -61,11 +61,10 @@ where
         let new_node = node.into_ptr();
         loop {
             // TODO: what's up with orderings here?
-            let tail: Ptr<Node<T>> = self.tail.load(Acquire);
+            let tail: Ptr<Node<T>> = self.tail.load(SeqCst);
             let tail_hp = tail.hazard();
             {
-                if self.tail.load(Acquire) != tail {
-                    println!("[push] validate failed");
+                if self.tail.load(SeqCst) != tail {
                     continue;
                 }
             }
@@ -77,8 +76,6 @@ where
                 // We try to help out by moving the tail pointer
                 // on queue to the real tail we've seen, which is `next`.
                 let _ = self.tail.compare_and_set(tail, next, Release);
-                println!("[push] tail wasn't tail");
-                println!("{:x} != {:x}", self.tail.load(SeqCst).data, tail.data);
             } else {
                 let succ = t.next
                     .compare_and_set(Ptr::null(), new_node, Release)
@@ -89,108 +86,19 @@ where
                     // thread could have helped by moving the tail pointer.
                     let _ = self.tail.compare_and_set(tail, new_node, Release);
                     break;
-                } else {
-                    println!("[push] failed to set Q.tail");
                 }
             }
         }
     }
 
     pub fn pop(&self) -> Option<T> {
-        let head: Ptr<Node<T>> = self.head.load(Acquire);
-        let head_hp = head.hazard();
-        // validate:
-        {
-            let new_head: Ptr<Node<T>> = self.head.load(Acquire);
-            // If head changed after registering, restart.
-            if head != new_head {
-                drop(head_hp);
-                return self.pop();
-            }
-        }
-        let h: &Node<T> = unsafe { head.deref() };
-        let next: Ptr<Node<T>> = h.next.load(Acquire);
-        if next.is_null() {
-            return None;
-        }
-        let next_hp = next.hazard();
-        {
-            if h.next.load(Acquire) != next {
-                drop(head_hp);
-                drop(next_hp);
-                return self.pop();
-            }
-        }
-        // Register the `next` pointer as hazardous
-        match unsafe { next.as_ref() } {
-            Some(node) => unsafe {
-                // NOTE(martin): We don't really return the correct node here:
-                // we CAS the old sentinel node out, and make the first data
-                // node the new sentinel node, but return the data of `node`,
-                // instead of `head`. In other words, the data we return
-                // belongs on the node that is the new sentinel node.
-                let res = self.head.compare_and_set(head, next, SeqCst);
-                match res {
-                    Ok(()) => {
-                        let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
-                        drop(next_hp);
-                        // While someone is using the head pointer, keep it here.
-                        head_hp.free();
-                        ret
-                    }
-                    // TODO: we would rather want to loop here, instead of
-                    // giving up if there is contention?
-                    Err(e) => None,
-                }
-            },
-            None => None,
-        }
+        self.pop_hp_fn(|hp| unsafe { hp.free() })
     }
 
-    pub fn push_node(&self, node: Owned<Node<T>>) {
-        let new_node = node.into_ptr();
-        loop {
-            let tail: Ptr<Node<T>> = self.tail.load(Acquire);
-            let tail_hp = tail.hazard();
-            {
-                if self.tail.load(Acquire) != tail {
-                    drop(tail_hp);
-                    println!("hp validate fail");
-                    continue;
-                }
-            }
-            let t = unsafe { tail.deref() };
-            let next = t.next.load(Acquire);
-            assert!(next != tail);
-            if unsafe { next.as_ref().is_some() } {
-                // tail wasnt't tail after all.
-                // We try to help out by moving the tail pointer
-                // on queue to the real tail we've seen, which is `next`.
-                let _res = self.tail.compare_and_set(tail, next, Release);
-                println!("tail was changed. move tail ptr");
-                if let Err(r) = _res {
-                    println!("-> {:?} ==> {:?}", tail.data, next.data);
-                    println!("   Q.tail = {:?}", self.tail.load(SeqCst).data);
-                }
-            } else {
-                let succ = t.next
-                    .compare_and_set(Ptr::null(), new_node, Release)
-                    .is_ok();
-                if succ {
-                    // the CAS succeded, and the new node is linked into the list.
-                    // Update `queue.tail`. If we fail here it's OK, since another
-                    // thread could have helped by moving the tail pointer.
-                    let _ = self.tail.compare_and_set(tail, new_node, Release);
-                    break;
-                } else {
-                    println!("failed to set tail.next.")
-                }
-            }
-        }
-    }
-
-
-    pub fn pop_node(&self) -> Option<Owned<Node<T>>> {
+    pub fn pop_hp_fn<F>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(super::atomic::HazardPtr<Node<T>>),
+    {
         'outer: loop {
             let head: Ptr<Node<T>> = self.head.load(Acquire);
             let head_hp = head.hazard();
@@ -199,7 +107,8 @@ where
                 let new_head: Ptr<Node<T>> = self.head.load(Acquire);
                 // If head changed after registering, restart.
                 if head != new_head {
-                    continue 'outer;
+                    drop(head_hp);
+                    return self.pop();
                 }
             }
             let h: &Node<T> = unsafe { head.deref() };
@@ -210,29 +119,35 @@ where
             let next_hp = next.hazard();
             {
                 if h.next.load(Acquire) != next {
-                    continue 'outer;
+                    drop(head_hp);
+                    drop(next_hp);
+                    return self.pop();
                 }
             }
-            return match unsafe { next.as_ref() } {
+            // Register the `next` pointer as hazardous
+            match unsafe { next.as_ref() } {
                 Some(node) => unsafe {
-                    // TODO: do we need this to be a HP as well?
-                    let new_next = node.next.load(SeqCst);
-                    let res = h.next.compare_and_set(next, new_next, SeqCst);
+                    // NOTE(martin): We don't really return the correct node here:
+                    // we CAS the old sentinel node out, and make the first data
+                    // node the new sentinel node, but return the data of `node`,
+                    // instead of `head`. In other words, the data we return
+                    // belongs on the node that is the new sentinel node.
+                    let res = self.head.compare_and_set(head, next, SeqCst);
                     match res {
                         Ok(()) => {
+                            let ret = Some(ManuallyDrop::into_inner(::std::ptr::read(&node.data)));
                             drop(next_hp);
-                            head_hp.spin();
-                            // Reset the next field on the node we are returning.
-                            node.next.store(Ptr::null(), SeqCst);
-                            Some(next.into_owned())
+                            // While someone is using the head pointer, keep it here.
+                            f(head_hp);
+                            return ret;
                         }
-                        // TODO: we would rather want to loop here, instead of giving up if there
-                        // is contention?
-                        Err(e) => None,
+                        // TODO: we would rather want to loop here, instead of
+                        // giving up if there is contention?
+                        Err(e) => continue 'outer,
                     }
                 },
-                None => None,
-            };
+                None => return None,
+            }
         }
     }
 
@@ -461,21 +376,9 @@ mod test {
     }
 
     #[test]
-    fn pop_node() {
-        const N: usize = 4;
-        let q = Queue::new();
-        for i in 0..N {
-            q.push(i);
-        }
-
-        let node = q.pop_node().expect("pop_node returned None");
-        assert_eq!(*node.data(), 0);
-    }
-
-    #[test]
     fn stress_test() {
         const N_THREADS: usize = 16;
-        const N: usize = 1024 * 1024;
+        const N: usize = 1024 * 32;
 
         // NOTE: we can replace the arc problems by using crossbeams's `scope`,
         // instead of `thread::spawn`.
@@ -499,6 +402,7 @@ mod test {
                     while let Some(i) = source.pop() {
                         sink.push(i);
                     }
+                    println!("thread {} is done", thread_id);
                 })
             })
             .collect::<Vec<_>>();

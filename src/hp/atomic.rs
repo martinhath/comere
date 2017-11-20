@@ -992,14 +992,19 @@ impl<T> HazardPtr<T> {
     /// Check if the pointer is marked as hazardous by any other thread. This should only be called
     /// after deregistering, or else we will report itself.
     pub fn scan(&self) -> bool {
+        HazardPtr::<()>::scan_addr(self.data)
+    }
+
+    pub fn scan_addr(addr: usize) -> bool {
         for e in ::hp::ENTRIES.iter() {
             for p in e.hazard_pointers.iter() {
-                if self.data == p.load(Ordering::SeqCst) {
+                if addr == p.load(Ordering::SeqCst) {
                     return true;
                 }
             }
         }
         false
+
     }
 
     // TODO: name
@@ -1016,6 +1021,7 @@ impl<T> HazardPtr<T> {
     #[cfg(not(feature = "hp-wait"))]
     pub fn wait(&self) {}
 
+    /// Block until no other thread has this HP registered. Do not drop the pointer.
     pub fn spin(&self) {
         assert!(self.deregister().is_ok());
         while self.scan() {
@@ -1035,6 +1041,13 @@ impl<T> HazardPtr<T> {
     pub fn fake(ptr: usize) -> Self {
         Self {
             data: ptr,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn from_data(data: usize) -> Self {
+        Self {
+            data,
             _marker: PhantomData,
         }
     }
