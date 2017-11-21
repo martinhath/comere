@@ -9,6 +9,7 @@ lazy_static = "*"
 [dev-dependencies]
 rand = "*"
 bencher = "*"
+crossbeam = "*"
 
 [profile.bench]
 debug = true

@@ -225,31 +225,4 @@ mod test {
             Self { b: [0; 1024 * 4] }
         }
     }
-
-    // This test confirms that the queue leaks memory.
-    // #[test]
-    // fn memory_usage() {
-    //     let mut q: Queue<LargeStruct> = Queue::new();
-    //     // This will leak
-    //     for i in 0..(1024 * 1024) {
-    //         q.push(LargeStruct::new());
-    //         q.pop();
-    //     }
-    // }
-}
-
-mod bench {
-    extern crate test;
-
-    #[bench]
-    fn queue_push(b: &mut test::Bencher) {
-        let q = super::Queue::new();
-        b.iter(|| { q.push(0, None); });
-    }
-
-    #[bench]
-    fn queue_enqueue(b: &mut test::Bencher) {
-        let q = super::Queue::new();
-        b.iter(|| { q.enqueue(0); });
-    }
 }
