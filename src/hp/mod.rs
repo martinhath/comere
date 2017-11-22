@@ -6,7 +6,7 @@ pub mod atomic;
 pub mod queue;
 pub mod list;
 
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use self::atomic::{Owned, HazardPtr};
 use std::mem::{forget, drop, ManuallyDrop};
@@ -20,19 +20,52 @@ const NUM_HP: usize = 3;
 #[derive(Debug)]
 struct ThreadEntry {
     hazard_pointers: [AtomicUsize; NUM_HP],
+    thread_id: usize,
 }
 
 impl ThreadEntry {
     fn new() -> Self {
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
-            let mut entry = Self { hazard_pointers: ::std::mem::uninitialized() };
+            let mut entry = Self {
+                hazard_pointers: ::std::mem::uninitialized(),
+                thread_id: get_next_thread_id(),
+            };
             use std::ptr::write;
             for i in 0..NUM_HP {
                 write(&mut entry.hazard_pointers[i], AtomicUsize::new(0));
             }
             entry
         }
+    }
+}
+
+impl PartialEq for ThreadEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id
+    }
+}
+
+struct ThreadLocal {
+    thread_marker: *const list::Node<ThreadEntry>,
+}
+
+impl ThreadLocal {
+    /// Returns a reference to the threads marker. Make the marker if it is not present.
+    fn marker(&mut self) -> &'static ManuallyDrop<ThreadEntry> {
+        let mut marker_ptr = self.thread_marker;
+        if marker_ptr.is_null() {
+            marker_ptr = ENTRIES.insert(ThreadEntry::new()).as_raw();
+            self.thread_marker = marker_ptr;
+        }
+        // This is safe, since we've just made sure it isn't null.
+        unsafe { &(*marker_ptr).data }
+    }
+}
+
+impl Drop for ThreadLocal {
+    fn drop(&mut self) {
+        // let e = ENTRIES.remove(self.)
     }
 }
 
@@ -43,6 +76,11 @@ thread_local! {
     static ENTRY_PTR: RefCell<atomic::Ptr<'static, ThreadEntry>> = {
         RefCell::new(atomic::Ptr::null())
     };
+    static THREAD_LOCAL: RefCell<ThreadLocal> = {
+        RefCell::new(ThreadLocal {
+            thread_marker: ::std::ptr::null(),
+        })
+    }
 }
 
 /// Get a reference to the current threads entry in the global list. If this entry is not
@@ -64,8 +102,15 @@ lazy_static! {
     static ref ENTRIES: list::List<ThreadEntry> = {
         list::List::new()
     };
-
+    static ref THREAD_ID: AtomicUsize = {
+        AtomicUsize::new(0)
+    };
 }
+
+fn get_next_thread_id() -> usize {
+    THREAD_ID.fetch_add(1, Ordering::SeqCst)
+}
+
 
 struct Garbage(Box<FnOnce()>, usize);
 

@@ -4,7 +4,7 @@ use std::mem::{drop, ManuallyDrop};
 use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
 
 pub struct Node<T> {
-    data: ManuallyDrop<T>,
+    pub data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
@@ -35,7 +35,7 @@ where
     }
 
     /// Insert into the head of the list
-    pub fn insert(&self, data: T) -> Ptr<T> {
+    pub fn insert(&self, data: T) -> Ptr<Node<T>> {
         let node = Node::new(data);
         let curr_ptr: Ptr<Node<T>> = Owned::new(node).into_ptr();
         let data_ptr: Ptr<T> = {
@@ -49,7 +49,7 @@ where
             let res = self.head.compare_and_set(head, curr_ptr, Release);
             match res {
                 Ok(_) => {
-                    return data_ptr;
+                    return curr_ptr;
                 }
                 Err(new_head) => {
                     head = new_head;
@@ -133,14 +133,14 @@ where
     ///
     /// TODO(6.11.17): Return the value! We need to do this, since it may have to be dropped. Now
     /// we just leak the value!
-    pub fn remove(&self, value: &T) -> bool {
+    pub fn remove(&self, value: &T) -> Option<Owned<Node<T>>> {
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
         'outer: loop {
             let mut previous_node_ptr = &self.head;
             let mut current_ptr = previous_node_ptr.load(SeqCst);
             if current_ptr.is_null() {
-                return false;
+                return None;
             }
             let mut current: &Node<T>;
             let mut prev_handle: Option<HazardPtr<::hp::list::Node<T>>> = None;
@@ -179,14 +179,7 @@ where
                             // Now `current` is not reachable from the list.
                             // TODO(6.11.17): have a way to do this in one operation?
                             curr_hp.wait();
-                            unsafe {
-                                // Since we have made the node unreachable, and
-                                // no thread has registered it as hazardous, it
-                                // is safe to free.
-                                drop(current_ptr.into_owned());
-                            }
-                            // `prev_handle` is dropped, since we `return`.
-                            return true;
+                            return Some(unsafe { current_ptr.into_owned() });
                         }
                         Err(_) => {
                             let pnp = previous_node_ptr.load(SeqCst);
@@ -213,7 +206,7 @@ where
 
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
-                        return false;
+                        return None;
                     }
                 }
             }

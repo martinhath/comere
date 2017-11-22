@@ -2,6 +2,7 @@
 extern crate bencher;
 extern crate comere;
 extern crate crossbeam;
+extern crate time;
 
 use bencher::Bencher;
 
@@ -127,6 +128,7 @@ mod hp {
             pub fn $name(b: &mut Bencher) { transfer_n(b, $n); }
         }
     }
+
     transfer_!(transfer_1, 1);
     transfer_!(transfer_2, 2);
     transfer_!(transfer_4, 4);
@@ -224,6 +226,7 @@ mod ebr {
             pub fn $name(b: &mut Bencher) { transfer_n(b, $n); }
         }
     }
+
     transfer_!(transfer_1, 1);
     transfer_!(transfer_2, 2);
     transfer_!(transfer_4, 4);
@@ -238,6 +241,8 @@ mod crossbeam_bench {
     use std::sync::{Arc, Condvar, Mutex};
     use std::mem::drop;
 
+    fn time() -> u64 { ::time::precise_time_ns() }
+
     pub fn transfer_n(b: &mut Bencher, n_threads: usize) {
         b.bench_n(1, |_b| {
             const NUM_ELEMENTS: usize = 256 * 256;
@@ -248,7 +253,7 @@ mod crossbeam_bench {
             let sink = Arc::new(MsQueue::new());
             let pair = Arc::new((Mutex::new(false), Condvar::new()));
             let mut threads = Vec::with_capacity(n_threads);
-            for _ in 0..n_threads {
+            for i in 0..n_threads {
                 let p = pair.clone();
                 let source = source.clone();
                 let sink = sink.clone();
@@ -259,13 +264,17 @@ mod crossbeam_bench {
                         started = cvar.wait(started).unwrap();
                     }
                     drop(started);
+                    let t0 = time();
                     while let Some(i) = source.try_pop() {
                         sink.push(i);
                     }
+                    let t1 = time();
+                    // println!("[b] thread {:2} finished in {:10}ns", i, t1 - t0);
                 });
                 threads.push(handle);
             }
             _b.iter(|| {
+                let t0 = time();
                 let &(ref lock, ref cvar) = &*pair;
                 let mut started = lock.lock().unwrap();
                 *started = true;
@@ -275,6 +284,48 @@ mod crossbeam_bench {
                     let t = threads.remove(i);
                     let _ = t.join();
                 }
+                let t1 = time();
+                // println!("[b] main      finished in {:10}ns\n", t1 - t0);
+            });
+
+        });
+    }
+
+    pub fn transfer_n_barrier(b: &mut Bencher, n_threads: usize) {
+        b.bench_n(1, |_b| {
+            const NUM_ELEMENTS: usize = 256 * 256;
+            let source = Arc::new(MsQueue::new());
+            for i in 0..NUM_ELEMENTS {
+                source.push(i);
+            }
+            let sink = Arc::new(MsQueue::new());
+            use std::sync::Barrier;
+            let barrier = Arc::new(Barrier::new(n_threads + 1));
+            let mut threads = Vec::with_capacity(n_threads);
+            for i in 0..n_threads {
+                let source = source.clone();
+                let sink = sink.clone();
+                let barrier = barrier.clone();
+                let handle = ::std::thread::spawn(move || {
+                    barrier.wait();
+                    let t0 = time();
+                    while let Some(i) = source.try_pop() {
+                        sink.push(i);
+                    }
+                    let t1 = time();
+                    // println!("[b] thread {:2} finished in {:10}ns", i, t1 - t0);
+                });
+                threads.push(handle);
+            }
+            _b.iter(|| {
+                let t0 = time();
+                barrier.wait();
+                for i in (0..n_threads).rev() {
+                    let t = threads.remove(i);
+                    let _ = t.join();
+                }
+                let t1 = time();
+                // println!("[b] main      finished in {:10}ns\n", t1 - t0);
             });
 
         });
@@ -292,6 +343,10 @@ mod crossbeam_bench {
     transfer_!(transfer_8, 8);
     transfer_!(transfer_16, 16);
     transfer_!(transfer_32, 32);
+
+    pub fn aransfer_barrier_1(b: &mut Bencher) { transfer_n_barrier(b, 1); }
+    pub fn aransfer_barrier_2(b: &mut Bencher) { transfer_n_barrier(b, 2); }
+    pub fn aransfer_barrier_4(b: &mut Bencher) { transfer_n_barrier(b, 4); }
 }
 
 benchmark_group!(nothing_queue, nothing::push, nothing::pop);
@@ -318,10 +373,14 @@ benchmark_group!(
 );
 benchmark_group!(
     crossbeam_bench,
+    crossbeam_bench::aransfer_barrier_1,
+    crossbeam_bench::aransfer_barrier_2,
+    crossbeam_bench::aransfer_barrier_4,
+
     crossbeam_bench::transfer_1,
     crossbeam_bench::transfer_2,
     crossbeam_bench::transfer_4 // crossbeam_bench::transfer_8,
                                 // crossbeam_bench::transfer_16,
                                 // crossbeam_bench::transfer_32
-);
+    );
 benchmark_main!(hp_queue, ebr_queue, nothing_queue, crossbeam_bench);

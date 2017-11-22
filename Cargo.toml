@@ -10,6 +10,7 @@ lazy_static = "*"
 rand = "*"
 bencher = "*"
 crossbeam = "*"
+time = "*"
 
 [profile.bench]
 debug = true

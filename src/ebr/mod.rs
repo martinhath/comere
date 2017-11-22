@@ -53,6 +53,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::cell::RefCell;
 use std::default::Default;
+use std::mem::ManuallyDrop;
 
 use self::atomic::Owned;
 use self::list::Node;
@@ -62,12 +63,17 @@ use self::list::Node;
 /// it has read.
 struct ThreadPinMarker {
     epoch: AtomicUsize,
+    thread_id: usize,
 }
 
 impl ThreadPinMarker {
     /// Make a new pin marker
     fn new() -> Self {
-        Self { epoch: AtomicUsize::new(0) }
+        let u = GLOBAL.get_next_thread_id();
+        Self {
+            epoch: AtomicUsize::new(0),
+            thread_id: u,
+        }
     }
 
     /// Mark the marker as pinned. This should not be called if the thread is already pinned.
@@ -119,6 +125,12 @@ impl ThreadPinMarker {
     }
 }
 
+impl PartialEq for ThreadPinMarker {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id
+    }
+}
+
 /// A `Bag` of `Garbage`.
 ///
 /// We cannot afford to allocate a new node in any data structure
@@ -132,9 +144,6 @@ struct Bag {
     data: [Option<Garbage>; BAG_SIZE],
     /// The index of the first available slot in `data`.
     index: usize,
-    // TODO: remove these.
-    thread: usize,
-    count: usize,
 }
 
 const BAG_SIZE: usize = 32;
@@ -179,8 +188,6 @@ impl Bag {
         Self {
             data: Default::default(),
             index: 0,
-            thread: get_thread_id(),
-            count,
         }
     }
 
@@ -217,6 +224,7 @@ struct GlobalState {
     epoch: AtomicUsize,
     pins: list::List<ThreadPinMarker>,
     garbage: queue::Queue<(usize, Bag)>,
+    next_thread_id: AtomicUsize,
 }
 
 impl GlobalState {
@@ -295,6 +303,10 @@ impl GlobalState {
             self.free_garbage(current_epoch, pin);
         }
     }
+
+    fn get_next_thread_id(&self) -> usize {
+        self.next_thread_id.fetch_add(1, Ordering::SeqCst)
+    }
 }
 
 lazy_static! {
@@ -303,6 +315,7 @@ lazy_static! {
             epoch: AtomicUsize::new(0),
             pins: list::List::new(),
             garbage: queue::Queue::new(),
+            next_thread_id: AtomicUsize::new(0),
         }
     };
 }
@@ -339,10 +352,28 @@ impl LocalState {
             }
         };
     }
+
+    /// Returns a reference to the threads marker. Make the marker if it is not present.
+    fn marker(&mut self, p: Pin) -> &'static ManuallyDrop<ThreadPinMarker> {
+        let mut marker_ptr = self.thread_pin;
+        if marker_ptr.is_null() {
+            marker_ptr = GLOBAL.pins.insert(ThreadPinMarker::new(), p).as_raw();
+            self.thread_pin = marker_ptr;
+        }
+        // This is safe, since we've just made sure it isn't null.
+        unsafe { &(*marker_ptr).data }
+    }
+}
+
+impl Drop for LocalState {
+    fn drop(&mut self) {
+        let p = Pin::fake();
+        let m = self.marker(p);
+        self.add_garbage(GLOBAL.pins.remove(m, p).unwrap(), p);
+    }
 }
 
 thread_local! {
-    static LOCAL_ID: RefCell<usize> = { RefCell::new(0) };
     static LOCAL_EPOCH: RefCell<LocalState> = {
         RefCell::new(LocalState {
             thread_pin: ::std::ptr::null(),
@@ -379,16 +410,6 @@ impl<'scope> Pin<'scope> {
     }
 }
 
-// TODO: remove debug
-pub fn register_thread(i: usize) {
-    LOCAL_ID.with(|l| *l.borrow_mut() = i);
-}
-
-// TODO: remove debug
-pub fn get_thread_id() -> usize {
-    LOCAL_ID.with(|l| *l.borrow())
-}
-
 /// Pin the thread.
 ///
 /// This is the core of EBR. When we want to do anything with memory, we need to pin the thread in
@@ -400,17 +421,7 @@ where
 {
     // Make the pin
     let p = Pin { _marker: PhantomData };
-
-    // Get the marker, or make it if it is `null`.
-    let marker = {
-        let mut marker_ptr = LOCAL_EPOCH.with(|l| l.borrow().thread_pin);
-        if marker_ptr.is_null() {
-            marker_ptr = GLOBAL.pins.insert(ThreadPinMarker::new(), p).as_raw();
-            LOCAL_EPOCH.with(|l| l.borrow_mut().thread_pin = marker_ptr);
-        }
-        // This is safe, since we've just made sure it isn't null.
-        unsafe { &(*marker_ptr).data }
-    };
+    let marker = LOCAL_EPOCH.with(|l| l.borrow_mut().marker(p));
 
     // Read the global epoch.
     let global_epoch = GLOBAL.epoch.load(Ordering::SeqCst);

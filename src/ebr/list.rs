@@ -140,14 +140,14 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     /// Note that this method causes the list to not be lock-free, since
     /// threads wanting to insert a node after this or remove the next node
     /// will be stuck forever if a thread tags the current node and then dies.
-    pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> bool {
+    pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> Option<Owned<Node<T>>> {
         // Rust does not have tail-call optimization guarantees,
         // so we have to use a loop here, in order not to blow the stack.
         'outer: loop {
             let mut previous_node_ptr = &self.head;
             let mut current_ptr = self.head.load(SeqCst, _pin);
             if current_ptr.is_null() {
-                return false;
+                return None;
             }
             let mut current: &Node<T> = unsafe { current_ptr.deref() };
 
@@ -173,8 +173,7 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                         previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst, _pin);
                     match res {
                         Ok(_) => {
-                            _pin.add_garbage(unsafe { current_ptr.into_owned() });
-                            return true;
+                            return Some(unsafe { current_ptr.into_owned() });
                         }
                         Err(_) => {
                             let pnp = previous_node_ptr.load(SeqCst, _pin);
@@ -197,7 +196,7 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                     current_ptr = next_ptr;
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
-                        return false;
+                        return None;
                     }
                     current = unsafe { current_ptr.deref() };
                 }

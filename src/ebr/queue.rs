@@ -237,13 +237,11 @@ mod test {
 
     #[test]
     fn can_construct_queue() {
-        super::super::register_thread(1);
         pin(|pin| { let q: Queue<Payload> = Queue::new(); });
     }
 
     #[test]
     fn st_queue_push() {
-        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<Payload> = Queue::new();
             q.push(Payload::new(), pin);
@@ -254,7 +252,6 @@ mod test {
 
     #[test]
     fn st_queue_push_pop() {
-        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<u32> = Queue::new();
             q.push(1, pin);
@@ -266,7 +263,6 @@ mod test {
 
     #[test]
     fn st_queue_push_pop_many() {
-        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<u32> = Queue::new();
             for i in 0..100 {
@@ -281,7 +277,6 @@ mod test {
 
     #[test]
     fn st_queue_len() {
-        super::super::register_thread(1);
         pin(|pin| {
             let q: Queue<Payload> = Queue::new();
             for i in 0..10 {
@@ -301,7 +296,6 @@ mod test {
 
     #[test]
     fn no_drop() {
-        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
@@ -326,7 +320,6 @@ mod test {
 
     #[test]
     fn single_drop() {
-        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
@@ -356,7 +349,6 @@ mod test {
 
     #[test]
     fn do_drop() {
-        super::super::register_thread(1);
         let q = Queue::new();
         let iters = 1024 * 1024;
         for i in 0..iters {
@@ -376,7 +368,6 @@ mod test {
 
     #[test]
     fn is_unique_receiver() {
-        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const ELEMS: usize = 1024 * 512;
 
@@ -400,7 +391,6 @@ mod test {
                 let markers = markers.clone();
                 let q = q.clone();
                 spawn(move || {
-                    super::super::register_thread(i + 2);
                     while let Some(i) = pin(|pin| q.pop(pin)) {
                         assert!(i < ELEMS);
                         let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
@@ -423,7 +413,6 @@ mod test {
 
     #[test]
     fn is_unique_receiver_if() {
-        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const ELEMS: usize = 1024 * 512;
 
@@ -449,7 +438,6 @@ mod test {
                 let markers = markers.clone();
                 let q = q.clone();
                 spawn(move || {
-                    super::super::register_thread(i + 2);
                     while let Some(i) = pin(|pin| q.pop_if(|_| true, pin)) {
                         let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
                         assert_eq!(ret, false);
@@ -471,7 +459,6 @@ mod test {
 
     #[test]
     fn stress_test() {
-        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const N: usize = 1024 * 1024;
 
@@ -489,7 +476,6 @@ mod test {
                 spawn(move || {
                     let source = source;
                     let sink = sink;
-                    super::super::register_thread(thread_id + 2);
 
                     while let Some(i) = pin(|pin| source.pop(pin)) {
                         pin(|pin| sink.push(i, pin));
@@ -513,7 +499,6 @@ mod test {
 
     #[test]
     fn pop_if_push() {
-        super::super::register_thread(1);
         const N_THREADS: usize = 16;
         const N: usize = 1024 * 1024;
 
@@ -523,7 +508,6 @@ mod test {
             .map(|thread_id| {
                 let q = q.clone();
                 spawn(move || {
-                    super::super::register_thread(thread_id + 2);
                     let push = thread_id % 2 == 0;
 
                     pin(|pin| {
