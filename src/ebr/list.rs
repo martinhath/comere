@@ -313,7 +313,7 @@ mod test {
 
         for i in (0..N).rev() {
             let ret = pin(|pin| list.remove(&ids[i], pin));
-            assert!(ret);
+            assert!(ret.is_some());
         }
         pin(|pin| assert_eq!(list.iter(pin).next(), None));
     }

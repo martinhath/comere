@@ -4,7 +4,7 @@ use std::mem::{drop, ManuallyDrop};
 use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
 
 pub struct Node<T> {
-    pub data: ManuallyDrop<T>,
+    data: ManuallyDrop<T>,
     next: Atomic<Node<T>>,
 }
 
@@ -35,7 +35,7 @@ where
     }
 
     /// Insert into the head of the list
-    pub fn insert(&self, data: T) -> Ptr<Node<T>> {
+    pub fn insert(&self, data: T) -> Ptr<T> {
         let node = Node::new(data);
         let curr_ptr: Ptr<Node<T>> = Owned::new(node).into_ptr();
         let data_ptr: Ptr<T> = {
@@ -49,7 +49,7 @@ where
             let res = self.head.compare_and_set(head, curr_ptr, Release);
             match res {
                 Ok(_) => {
-                    return curr_ptr;
+                    return data_ptr;
                 }
                 Err(new_head) => {
                     head = new_head;
@@ -120,7 +120,7 @@ where
 
 impl<T> List<T>
 where
-    T: 'static + Eq + ::std::fmt::Debug,
+    T: 'static + PartialEq + ::std::fmt::Debug,
 {
     /// Remove the first node in the list where `node.data == key`
     ///
@@ -177,7 +177,6 @@ where
                     match res {
                         Ok(_) => {
                             // Now `current` is not reachable from the list.
-                            // TODO(6.11.17): have a way to do this in one operation?
                             curr_hp.wait();
                             return Some(unsafe { current_ptr.into_owned() });
                         }

@@ -55,6 +55,7 @@ mod nothing {
 mod hp {
     use super::Bencher;
     use comere::hp::queue::Queue;
+    use comere::hp::*;
 
     use std::sync::{Arc, Condvar, Mutex};
     use std::mem::drop;

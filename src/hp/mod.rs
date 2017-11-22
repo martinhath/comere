@@ -11,14 +11,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use self::atomic::{Owned, HazardPtr};
 use std::mem::{forget, drop, ManuallyDrop};
 
-
+///
 /// The number of hazard pointers for each thread.
 const NUM_HP: usize = 3;
 
 /// Data each thread needs to keep track of the hazard pointers.  We must use atomics here; if we
 /// do not we will have race conditions when one threads scans, and another thread edits its entry.
 #[derive(Debug)]
-struct ThreadEntry {
+pub struct ThreadEntry {
     hazard_pointers: [AtomicUsize; NUM_HP],
     thread_id: usize,
 }
@@ -47,25 +47,37 @@ impl PartialEq for ThreadEntry {
 }
 
 struct ThreadLocal {
-    thread_marker: *const list::Node<ThreadEntry>,
+    thread_marker: *const ThreadEntry,
 }
 
 impl ThreadLocal {
     /// Returns a reference to the threads marker. Make the marker if it is not present.
-    fn marker(&mut self) -> &'static ManuallyDrop<ThreadEntry> {
+    fn marker(&mut self) -> &'static mut ThreadEntry {
         let mut marker_ptr = self.thread_marker;
         if marker_ptr.is_null() {
             marker_ptr = ENTRIES.insert(ThreadEntry::new()).as_raw();
             self.thread_marker = marker_ptr;
         }
-        // This is safe, since we've just made sure it isn't null.
-        unsafe { &(*marker_ptr).data }
+        unsafe {
+            let ptr = ::std::mem::transmute::<*const ThreadEntry, *mut ThreadEntry>(marker_ptr);
+            // This is safe, since we've just made sure it isn't null.
+            &mut *ptr
+        }
     }
+}
+
+pub fn marker() -> &'static mut ThreadEntry {
+    THREAD_LOCAL.with(|tl| tl.borrow_mut().marker())
 }
 
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
-        // let e = ENTRIES.remove(self.)
+        match unsafe { self.thread_marker.as_ref() } {
+            Some(thread_local) => {
+                ENTRIES.remove(thread_local);
+            }
+            None => {}
+        }
     }
 }
 
@@ -77,23 +89,11 @@ thread_local! {
         RefCell::new(atomic::Ptr::null())
     };
     static THREAD_LOCAL: RefCell<ThreadLocal> = {
+        println!("entries in list: {}", ENTRIES.iter().count());
         RefCell::new(ThreadLocal {
             thread_marker: ::std::ptr::null(),
         })
     }
-}
-
-/// Get a reference to the current threads entry in the global list. If this entry is not
-/// created yet, create it, and add it to the list.
-fn get_entry() -> &'static mut ThreadEntry {
-    let p: atomic::Ptr<ThreadEntry> = ENTRY_PTR.with(|ptr| if ptr.borrow().is_null() {
-        let p = ENTRIES.insert(ThreadEntry::new());
-        *ptr.borrow_mut() = p;
-        p
-    } else {
-        *ptr.borrow()
-    });
-    unsafe { &mut *(p.as_raw() as *mut ThreadEntry) }
 }
 
 lazy_static! {
