@@ -24,7 +24,7 @@ pub fn black_box<T>(dummy: T) -> T {
 }
 
 impl<S> Bencher<S> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Bencher {
             samples: vec![],
             n: 10_000,
@@ -34,9 +34,13 @@ impl<S> Bencher<S> {
         }
     }
 
-    fn bench<F: Fn(&S)>(&mut self, mut state: S, f: F) {
+    pub fn set_n(&mut self, n: usize) {
+        self.n = n;
+    }
+
+    pub fn bench<F: Fn(&S)>(&mut self, mut state: S, f: F) -> S {
         (self.pre)(&mut state);
-        for _ in 0..self.n {
+        for i in 0..self.n {
             let t0 = time::precise_time_ns();
             black_box(f(&state));
             let t1 = time::precise_time_ns();
@@ -45,17 +49,20 @@ impl<S> Bencher<S> {
         }
         (self.post)(&mut state);
         self.print();
+        state
     }
 
     fn print(&self) {
         let len = self.samples.len() as u64;
         let sum = self.samples.iter().cloned().sum::<u64>();
         let avg = sum / len;
-        let var = self.samples
+        let var = { let s = self.samples
             .iter()
             .cloned()
             .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
             .sum::<u64>() / len;
+            (s as f32).sqrt() as u64
+        };
         println!(
             "Bench: ................  {} ns/iter (+/- {})",
             fmt_thousands_sep(avg),
@@ -63,15 +70,15 @@ impl<S> Bencher<S> {
         );
     }
 
-    fn pre<F: 'static + Fn(&mut S)>(&mut self, f: F) {
+    pub fn pre<F: 'static + Fn(&mut S)>(&mut self, f: F) {
         self.pre = Box::new(f);
     }
 
-    fn post<F: 'static + Fn(&mut S)>(&mut self, f: F) {
+    pub fn post<F: 'static + Fn(&mut S)>(&mut self, f: F) {
         self.post = Box::new(f);
     }
 
-    fn between<F: 'static + Fn(&mut S)>(&mut self, f: F) {
+    pub fn between<F: 'static + Fn(&mut S)>(&mut self, f: F) {
         self.between = Box::new(f);
     }
 }

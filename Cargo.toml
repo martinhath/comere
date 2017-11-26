@@ -5,6 +5,7 @@ authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
 
 [dependencies]
 lazy_static = "*"
+bench = { path = './bench' }
 
 [dev-dependencies]
 rand = "*"
@@ -15,12 +16,13 @@ time = "*"
 [profile.bench]
 debug = true
 
+[[bin]]
+name = "queue2"
+path = "benches/queue2.rs"
+
 [[bench]]
 name = "queue"
 harness = false
-
-[[bench]]
-name = "queue2"
 
 [[bench]]
 name = "list"

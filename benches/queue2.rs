@@ -1,109 +1,119 @@
-#![feature(test)]
-extern crate test;
 extern crate comere;
+extern crate bench;
 
-mod ebr {
-    use std::sync::{Arc, Barrier, Condvar, Mutex};
-    use std::thread::spawn;
-    use test::Bencher;
-    use test::black_box;
+use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::thread::spawn;
+use std::cell::UnsafeCell;
 
-    use comere::ebr::pin;
-    use comere::ebr::queue::Queue;
+use comere::ebr::pin;
+use comere::ebr::queue::Queue;
 
-    #[bench]
-    pub fn transfer_1(b: &mut Bencher) {
-        transfer_n(b, 1);
-    }
-    #[bench]
-    pub fn transfer_2(b: &mut Bencher) {
-        transfer_n(b, 2);
-    }
-    #[bench]
-    pub fn transfer_4(b: &mut Bencher) {
-        transfer_n(b, 4);
-    }
-    #[bench]
-    pub fn transfer_8(b: &mut Bencher) {
-        transfer_n(b, 8);
-    }
+fn main() {
+    const NUM_ELEMENTS: usize = 256 * 256;
+    const NUM_THREADS: usize = 4;
+    struct BenchState {
+        state: Arc<Mutex<State>>,
+        condvar: Arc<Condvar>,
+        barrier: Arc<Barrier>,
+        source: UnsafeCell<Queue<usize>>,
+        sink: UnsafeCell<Queue<usize>>,
+        threads: Vec<::std::thread::JoinHandle<()>>,
+    };
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Wait,
+        Run,
+        Exit,
+    };
+    let bench_state = BenchState {
+        state: Arc::new(Mutex::new(State::Wait)),
+        condvar: Arc::new(Condvar::new()),
+        barrier: Arc::new(Barrier::new(NUM_THREADS + 1)),
+        source: UnsafeCell::new(Queue::new()),
+        sink: UnsafeCell::new(Queue::new()),
+        threads: vec![],
+    };
 
-    pub fn transfer_n(b: &mut Bencher, num_threads: usize) {
-        const NUM_ELEMENTS: usize = 256 * 256;
-        #[derive(Clone, Copy, PartialEq)]
-        enum State {
-            Wait,
-            Run,
-            Exit,
-        };
-        let state = Arc::new(Mutex::new(State::Wait));
-        let condvar = Arc::new(Condvar::new());
-        let barrier = Arc::new(Barrier::new(num_threads + 1));
+    let mut b = bench::Bencher::<BenchState>::new();
 
-        let source = Arc::new(Queue::new());
+    // Before the benchmark, fill the source up with elements, and spawn the threads that are to do
+    // the work.
+    b.pre(move |state| {
         pin(|pin| for i in 0..NUM_ELEMENTS {
-            source.push(i, pin);
+            unsafe { (*state.source.get()).push(i, pin) };
         });
-        let sink = Arc::new(Queue::new());
-
-        let threads = (0..num_threads)
-            .map(|i| {
-                let state = state.clone();
-                let condvar = condvar.clone();
-                let barrier = barrier.clone();
-                let source = source.clone();
-                let sink = sink.clone();
-                println!("SPAWN");
-                spawn(move || loop {
-                    let mut started = state.lock().unwrap();
-                    while *started == State::Wait {
-                        started = condvar.wait(started).unwrap();
+        for i in 0..NUM_THREADS {
+            let bench_state = state.state.clone();
+            let condvar = state.condvar.clone();
+            let barrier = state.barrier.clone();
+            let (source, sink) = unsafe {
+                let source: &Queue<_> = &*state.source.get();
+                let sink: &Queue<_> = &*state.sink.get();
+                (source, sink)
+            };
+            state.threads.push(spawn(move || loop {
+                let mut started = bench_state.lock().unwrap();
+                while *started == State::Wait {
+                    started = condvar.wait(started).unwrap();
+                }
+                let state = *started;
+                drop(started);
+                match state {
+                    State::Exit => {
+                        break;
                     }
-                    let state = *started;
-                    drop(started);
-                    match state {
-                        State::Exit => {
-                            break;
-                        }
-                        State::Run => {
-                            // BODY BEGINS HERE! ///////////////////////////////
+                    State::Run => {
+                        // BODY BEGINS HERE! ///////////////////////////////
 
-                            let mut c = 0;
-                            while let Some(i) = pin(|pin| source.pop(pin)) {
-                                pin(|pin| sink.push(i, pin));
-                                c += 1;
-                            }
-                            println!("thread {} moved {} elements", i, c);
-
-                            // BODY END HERE ///////////////////////////////////
+                        // let mut c = 0;
+                        while let Some(i) = pin(|pin| source.pop(pin)) {
+                            pin(|pin| sink.push(i, pin));
+                            // c += 1;
                         }
-                        State::Wait => unreachable!(),
+                        // println!("thread {} moved {} elements", i, c);
+
+                        // BODY END HERE ///////////////////////////////////
                     }
-                    barrier.wait();
-                    barrier.wait();
-                })
-            })
-            .collect::<Vec<_>>();
-
-        b.iter(|| {
-            let mut s = state.lock().unwrap();
-            *s = State::Run;
-            drop(s);
-            condvar.notify_all();
-
-            barrier.wait();
-            *state.lock().unwrap() = State::Wait;
-            barrier.wait();
-        });
-
-        let mut s = state.lock().unwrap();
-        *s = State::Exit;
-        drop(s);
-        condvar.notify_all();
-
-        for t in threads.into_iter() {
-            t.join().unwrap();
+                    State::Wait => unreachable!(),
+                }
+                barrier.wait();
+                barrier.wait();
+            }));
         }
-    }
+    });
 
+    b.post(|state| {
+        let mut s = state.state.lock().unwrap();
+        *s = State::Exit;
+    });
+
+    b.between(|state| {
+        let (source, sink) = unsafe {
+            let source: &mut Queue<_> = &mut *state.source.get();
+            let sink: &mut Queue<_> = &mut *state.sink.get();
+            (source, sink)
+        };
+        pin(|pin| {
+            while let Some(e) = source.pop(pin) {
+                sink.push(e, pin);
+            }
+            unsafe {
+                // We know that no other thread is reading this data when we swap it. Therefore,
+                // this is safe.
+                ::std::ptr::swap(sink, source);
+            }
+        });
+    });
+
+    b.set_n(100);
+    b.bench(bench_state, |state| {
+        let mut s = state.state.lock().unwrap();
+        *s = State::Run;
+        drop(s);
+        state.condvar.notify_all();
+
+        state.barrier.wait();
+        *state.state.lock().unwrap() = State::Wait;
+        state.barrier.wait();
+    });
 }

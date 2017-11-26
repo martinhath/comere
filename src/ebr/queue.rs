@@ -116,50 +116,52 @@ where
     }
 
     pub fn pop<'scope>(&self, _pin: Pin<'scope>) -> Option<T> {
-        let head: Ptr<Node<T>> = self.head.load(SeqCst, _pin);
-        let h: &Node<T> = unsafe { head.deref() };
-        let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
-        match unsafe { next.as_ref() } {
-            Some(node) => unsafe {
-                // NOTE(martin): We don't really return the correct node here: we CAS the old
-                // sentinel node out, and make the first data node the new sentinel node, but
-                // return the data of `node`, instead of `head`. In other words, the data we return
-                // belongs on the node that is the new sentinel node.
-                //
-                // Before:
-                //
-                //  HEAD --:
-                //         |
-                //         V
-                //     !-----!   !-----!   !-----!
-                //     |  xx |-->|  93 |-->|  5  |---|
-                //     !-----!   !-----!   !-----!
-                //
-                // After:  (return Some(93))
-                //
-                //  HEAD -----------:
-                //                  |
-                //                  V
-                //     !-----!   !-----!   !-----!
-                //     |  xx |-->|  93 |-->|  5  |---|
-                //     !-----!   !-----!   !-----!
-                //
-                // Remember that the first node is the sentinel node, so its data isn't really in
-                // the queue.
-                //
-                // This is where we leak memory: when we CAS out `head`, it is no longer reachable
-                // by the queue.
-                let res = self.head.compare_and_set(head, next, SeqCst, _pin);
-                match res {
-                    Ok(()) => {
+        'outer: loop {
+            let head: Ptr<Node<T>> = self.head.load(SeqCst, _pin);
+            let h: &Node<T> = unsafe { head.deref() };
+            let next: Ptr<Node<T>> = h.next.load(SeqCst, _pin);
+            match unsafe { next.as_ref() } {
+                Some(node) => unsafe {
+                    // NOTE(martin): We don't really return the correct node here: we CAS the old
+                    // sentinel node out, and make the first data node the new sentinel node, but
+                    // return the data of `node`, instead of `head`. In other words, the data we return
+                    // belongs on the node that is the new sentinel node.
+                    //
+                    // Before:
+                    //
+                    //  HEAD --:
+                    //         |
+                    //         V
+                    //     !-----!   !-----!   !-----!
+                    //     |  xx |-->|  93 |-->|  5  |---|
+                    //     !-----!   !-----!   !-----!
+                    //
+                    // After:  (return Some(93))
+                    //
+                    //  HEAD -----------:
+                    //                  |
+                    //                  V
+                    //     !-----!   !-----!   !-----!
+                    //     |  xx |-->|  93 |-->|  5  |---|
+                    //     !-----!   !-----!   !-----!
+                    //
+                    // Remember that the first node is the sentinel node, so its data isn't really in
+                    // the queue.
+                    //
+                    // This is where we leak memory: when we CAS out `head`, it is no longer reachable
+                    // by the queue.
+                    let res = self.head.compare_and_set(head, next, SeqCst, _pin);
+                    match res {
+                        Ok(()) => {
                         let data = ::std::ptr::read(&node.data);
                         _pin.add_garbage(head.into_owned());
-                        Some(ManuallyDrop::into_inner(data))
+                        return Some(ManuallyDrop::into_inner(data));
                     }
-                    Err(e) => None,
-                }
-            },
-            None => None,
+                        Err(e) => continue 'outer,
+                    }
+                },
+                None => return None,
+            }
         }
     }
 
@@ -390,12 +392,10 @@ mod test {
             .map(|i| {
                 let markers = markers.clone();
                 let q = q.clone();
-                spawn(move || {
-                    while let Some(i) = pin(|pin| q.pop(pin)) {
-                        assert!(i < ELEMS);
-                        let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
-                        assert_eq!(ret, false);
-                    }
+                spawn(move || while let Some(i) = pin(|pin| q.pop(pin)) {
+                    assert!(i < ELEMS);
+                    let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                    assert_eq!(ret, false);
                 })
             })
             .collect::<Vec<_>>();
@@ -437,11 +437,12 @@ mod test {
             .map(|i| {
                 let markers = markers.clone();
                 let q = q.clone();
-                spawn(move || {
-                    while let Some(i) = pin(|pin| q.pop_if(|_| true, pin)) {
-                        let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
-                        assert_eq!(ret, false);
-                    }
+                spawn(move || while let Some(i) = pin(
+                    |pin| q.pop_if(|_| true, pin),
+                )
+                {
+                    let ret = markers[i].compare_and_swap(false, true, Ordering::SeqCst);
+                    assert_eq!(ret, false);
                 })
             })
             .collect::<Vec<_>>();
