@@ -20,6 +20,9 @@ name = "queue"
 harness = false
 
 [[bench]]
+name = "queue2"
+
+[[bench]]
 name = "list"
 harness = false
 

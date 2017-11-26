@@ -235,6 +235,7 @@ mod ebr {
     transfer_!(transfer_16, 16);
     transfer_!(transfer_32, 32);
 }
+
 mod crossbeam_bench {
     use super::Bencher;
     use crossbeam::sync::MsQueue;
@@ -242,7 +243,9 @@ mod crossbeam_bench {
     use std::sync::{Arc, Condvar, Mutex};
     use std::mem::drop;
 
-    fn time() -> u64 { ::time::precise_time_ns() }
+    fn time() -> u64 {
+        ::time::precise_time_ns()
+    }
 
     pub fn transfer_n(b: &mut Bencher, n_threads: usize) {
         b.bench_n(1, |_b| {
@@ -345,9 +348,15 @@ mod crossbeam_bench {
     transfer_!(transfer_16, 16);
     transfer_!(transfer_32, 32);
 
-    pub fn aransfer_barrier_1(b: &mut Bencher) { transfer_n_barrier(b, 1); }
-    pub fn aransfer_barrier_2(b: &mut Bencher) { transfer_n_barrier(b, 2); }
-    pub fn aransfer_barrier_4(b: &mut Bencher) { transfer_n_barrier(b, 4); }
+    pub fn aransfer_barrier_1(b: &mut Bencher) {
+        transfer_n_barrier(b, 1);
+    }
+    pub fn aransfer_barrier_2(b: &mut Bencher) {
+        transfer_n_barrier(b, 2);
+    }
+    pub fn aransfer_barrier_4(b: &mut Bencher) {
+        transfer_n_barrier(b, 4);
+    }
 }
 
 benchmark_group!(nothing_queue, nothing::push, nothing::pop);
@@ -383,5 +392,5 @@ benchmark_group!(
     crossbeam_bench::transfer_4 // crossbeam_bench::transfer_8,
                                 // crossbeam_bench::transfer_16,
                                 // crossbeam_bench::transfer_32
-    );
+);
 benchmark_main!(hp_queue, ebr_queue, nothing_queue, crossbeam_bench);
