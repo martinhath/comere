@@ -6,11 +6,13 @@ use std::thread::spawn;
 use std::cell::UnsafeCell;
 use std::env;
 
-use comere::ebr::pin;
-use comere::ebr::queue::Queue;
+use comere::hp::queue::Queue;
+
+const BENCH_NAME: &str = "queue-transport";
 
 fn main() {
-    let num_threads: usize = env::args().nth(1)
+    let num_threads: usize = env::args()
+        .nth(1)
         .unwrap_or("4".to_string())
         .parse()
         .unwrap_or(4);
@@ -43,9 +45,9 @@ fn main() {
     // Before the benchmark, fill the source up with elements, and spawn the threads that are to do
     // the work.
     b.pre(move |state| {
-        pin(|pin| for i in 0..NUM_ELEMENTS {
-            unsafe { (*state.source.get()).push(i, pin) };
-        });
+        for i in 0..NUM_ELEMENTS {
+            unsafe { (*state.source.get()).push(i) };
+        }
         for i in 0..num_threads {
             let bench_state = state.state.clone();
             let condvar = state.condvar.clone();
@@ -70,8 +72,8 @@ fn main() {
                         // BODY BEGINS HERE! ///////////////////////////////
 
                         // let mut c = 0;
-                        while let Some(i) = pin(|pin| source.pop(pin)) {
-                            pin(|pin| sink.push(i, pin));
+                        while let Some(i) = source.pop() {
+                            sink.push(i);
                             // c += 1;
                         }
                         // println!("thread {} moved {} elements", i, c);
@@ -97,16 +99,14 @@ fn main() {
             let sink: &mut Queue<_> = &mut *state.sink.get();
             (source, sink)
         };
-        pin(|pin| {
-            while let Some(e) = source.pop(pin) {
-                sink.push(e, pin);
-            }
-            unsafe {
-                // We know that no other thread is reading this data when we swap it. Therefore,
-                // this is safe.
-                ::std::ptr::swap(sink, source);
-            }
-        });
+        while let Some(e) = source.pop() {
+            sink.push(e);
+        }
+        unsafe {
+            // We know that no other thread is reading this data when we swap it. Therefore,
+            // this is safe.
+            ::std::ptr::swap(sink, source);
+        }
     });
 
     b.set_n(100);
@@ -121,6 +121,6 @@ fn main() {
         state.barrier.wait();
     });
 
-    let mut f = ::std::fs::File::create(&format!("ebr-{}", num_threads)).unwrap();
+    let mut f = ::std::fs::File::create(&format!("{}-hp-{}", BENCH_NAME, num_threads)).unwrap();
     let _ = b.output_samples(&mut f);
 }

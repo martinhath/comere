@@ -1,13 +1,19 @@
 #!/bin/bash
 
 THREADS="1 2 4 8"
-EXECS="queue-crossbeam queue-ebr queue-hp"
+BENCHES="queue-transport"
+VARIANTS="crossbeam ebr hp"
 
-for e in $(echo "$EXECS"); do
-  for n in $(echo "$THREADS"); do
-    printf "Run %s with %s threads\n" "$n" "$e"
-    cargo run --release --bin "$e" -- "$n"
+for variant in $(echo "$VARIANTS"); do
+  for bench in $(echo "$BENCHES"); do
+    files=""
+    for n in $(echo "$THREADS"); do
+      cargo run --release --bin "$bench-$variant" -- "$n"
+      files+="$bench-$variant-$n "
+    done
+    paste -d" " $files > "$bench-$variant"
+    rm $files
   done
 done
 
-gnuplot -persist gnuplot
+# gnuplot -persist gnuplot

@@ -8,6 +8,8 @@ use std::env;
 
 use crossbeam::sync::MsQueue;
 
+const BENCH_NAME: &str = "queue-transport";
+
 fn main() {
     let num_threads: usize = env::args().nth(1)
         .unwrap_or("4".to_string())
@@ -118,6 +120,6 @@ fn main() {
         state.barrier.wait();
     });
 
-    let mut f = ::std::fs::File::create(&format!("crossbeam-{}", num_threads)).unwrap();
+    let mut f = ::std::fs::File::create(&format!("{}-crossbeam-{}", BENCH_NAME, num_threads)).unwrap();
     let _ = b.output_samples(&mut f);
 }

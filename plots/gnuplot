@@ -1,19 +1,25 @@
 #!/bin/gnuplot
 
-set ytic auto
-set xtic auto
+set style fill solid 0.25 border -1
+set style boxplot outliers pointtype 7
+set style data boxplot
+set size square
 
-plot 'ebr-1' smooth bezier title "EBR, 1" lc rgb "#ffaaaa",\
-     'ebr-2' smooth bezier title "EBR, 2" lc rgb "#ff8888",\
-     'ebr-4' smooth bezier title "EBR, 4" lc rgb "#ff6666",\
-     'ebr-8' smooth bezier title "EBR, 8" lc rgb "#ff4444",\
-     'hp-1' smooth bezier title "HP, 1" lc rgb "#aaffaa",\
-     'hp-2' smooth bezier title "HP, 2" lc rgb "#88ff88",\
-     'hp-4' smooth bezier title "HP, 4" lc rgb "#66ff66",\
-     'hp-8' smooth bezier title "HP, 8" lc rgb "#44ff44",\
-     'crossbeam-1' smooth bezier title "Crossbeam, 1" lc rgb "#aaaaff",\
-     'crossbeam-2' smooth bezier title "Crossbeam, 2" lc rgb "#8888ff",\
-     'crossbeam-4' smooth bezier title "Crossbeam, 4" lc rgb "#6666ff",\
-     'crossbeam-8' smooth bezier title "Crossbeam, 8" lc rgb "#4444ff",
+set pointsize 0.3
 
-plot show
+set xtics ('t=1' 1, 't=2' 2, 't=4' 3, 't=8' 4)
+
+set terminal pdf size 10cm,10cm
+
+
+set title "Timings for EBR (transfer)"
+set output 'queue-transport-ebr.pdf'
+plot for [i=1:4] 'queue-transport-ebr' using (i):i notitle
+
+set title "Timings for crossbeam (transfer)"
+set output 'queue-transport-crossbeam.pdf'
+plot for [i=1:4] 'queue-transport-crossbeam' using (i):i notitle
+
+set title "Timings for HP (transfer)"
+set output 'queue-transport-hp.pdf'
+plot for [i=1:4] 'queue-transport-hp' using (i):i notitle
