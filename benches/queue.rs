@@ -232,8 +232,6 @@ mod ebr {
     transfer_!(transfer_2, 2);
     transfer_!(transfer_4, 4);
     transfer_!(transfer_8, 8);
-    transfer_!(transfer_16, 16);
-    transfer_!(transfer_32, 32);
 }
 
 mod crossbeam_bench {
@@ -345,8 +343,6 @@ mod crossbeam_bench {
     transfer_!(transfer_2, 2);
     transfer_!(transfer_4, 4);
     transfer_!(transfer_8, 8);
-    transfer_!(transfer_16, 16);
-    transfer_!(transfer_32, 32);
 
     pub fn aransfer_barrier_1(b: &mut Bencher) {
         transfer_n_barrier(b, 1);

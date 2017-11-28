@@ -44,7 +44,7 @@ impl<S> Bencher<S> {
             let t0 = time::precise_time_ns();
             black_box(f(&state));
             let t1 = time::precise_time_ns();
-            self.samples.push((t1 - t0) / 1000);
+            self.samples.push(t1 - t0);
             (self.between)(&mut state);
         }
         (self.post)(&mut state);
@@ -56,18 +56,37 @@ impl<S> Bencher<S> {
         let len = self.samples.len() as u64;
         let sum = self.samples.iter().cloned().sum::<u64>();
         let avg = sum / len;
-        let var = { let s = self.samples
-            .iter()
-            .cloned()
-            .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
-            .sum::<u64>() / len;
+        let var = {
+            let s = self.samples
+                .iter()
+                .cloned()
+                .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
+                .sum::<u64>() / len;
             (s as f32).sqrt() as u64
         };
+        let max = self.samples.iter().cloned().max().unwrap();
+        let min = self.samples.iter().cloned().min().unwrap();
+        let above = self.samples.iter().filter(|&&s| s > avg).count();
+        let below = self.samples.len() - above;
         println!(
-            "Bench: ................  {} ns/iter (+/- {})",
+            "Bench: ................  {} ns/iter (+/- {}) min={} max={} above={} below={}",
             fmt_thousands_sep(avg),
-            fmt_thousands_sep(var)
+            fmt_thousands_sep(var),
+            min,
+            max,
+            above,
+            below
         );
+    }
+
+    pub fn output_samples<W: ::std::io::Write>(
+        &self,
+        mut writer: W,
+    ) -> Result<(), ::std::io::Error> {
+        for sample in &self.samples {
+            writer.write_fmt(format_args!("{}\n", sample))?;
+        }
+        Ok(())
     }
 
     pub fn pre<F: 'static + Fn(&mut S)>(&mut self, f: F) {

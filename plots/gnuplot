@@ -1,0 +1,19 @@
+#!/bin/gnuplot
+
+set ytic auto
+set xtic auto
+
+plot 'ebr-1' smooth bezier title "EBR, 1" lc rgb "#ffaaaa",\
+     'ebr-2' smooth bezier title "EBR, 2" lc rgb "#ff8888",\
+     'ebr-4' smooth bezier title "EBR, 4" lc rgb "#ff6666",\
+     'ebr-8' smooth bezier title "EBR, 8" lc rgb "#ff4444",\
+     'hp-1' smooth bezier title "HP, 1" lc rgb "#aaffaa",\
+     'hp-2' smooth bezier title "HP, 2" lc rgb "#88ff88",\
+     'hp-4' smooth bezier title "HP, 4" lc rgb "#66ff66",\
+     'hp-8' smooth bezier title "HP, 8" lc rgb "#44ff44",\
+     'crossbeam-1' smooth bezier title "Crossbeam, 1" lc rgb "#aaaaff",\
+     'crossbeam-2' smooth bezier title "Crossbeam, 2" lc rgb "#8888ff",\
+     'crossbeam-4' smooth bezier title "Crossbeam, 4" lc rgb "#6666ff",\
+     'crossbeam-8' smooth bezier title "Crossbeam, 8" lc rgb "#4444ff",
+
+plot show

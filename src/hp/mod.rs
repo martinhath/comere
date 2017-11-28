@@ -70,16 +70,16 @@ pub fn marker() -> &'static mut ThreadEntry {
     THREAD_LOCAL.with(|tl| tl.borrow_mut().marker())
 }
 
-impl Drop for ThreadLocal {
-    fn drop(&mut self) {
-        match unsafe { self.thread_marker.as_ref() } {
-            Some(thread_local) => {
-                ENTRIES.remove(thread_local);
-            }
-            None => {}
-        }
-    }
-}
+// impl Drop for ThreadLocal {
+//     fn drop(&mut self) {
+//         match unsafe { self.thread_marker.as_ref() } {
+//             Some(thread_local) => {
+//                 ENTRIES.remove(thread_local);
+//             }
+//             None => {}
+//         }
+//     }
+// }
 
 use std::cell::RefCell;
 thread_local! {

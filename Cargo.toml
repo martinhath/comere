@@ -6,19 +6,27 @@ authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
 [dependencies]
 lazy_static = "*"
 bench = { path = './bench' }
+crossbeam = "*"
 
 [dev-dependencies]
 rand = "*"
 bencher = "*"
-crossbeam = "*"
 time = "*"
 
 [profile.bench]
 debug = true
 
 [[bin]]
-name = "queue2"
-path = "benches/queue2.rs"
+name = "queue-ebr"
+path = "benches/queue-ebr.rs"
+
+[[bin]]
+name = "queue-crossbeam"
+path = "benches/queue-crossbeam.rs"
+
+[[bin]]
+name = "queue-hp"
+path = "benches/queue-hp.rs"
 
 [[bench]]
 name = "queue"
