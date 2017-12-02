@@ -204,6 +204,73 @@ impl<T: ::std::cmp::PartialEq> List<T> {
         }
     }
 
+    pub fn remove_with<'scope, F>(&self, value: &T, _pin: Pin<'scope>, f: F) -> bool
+    where F: FnOnce(Owned<Node<T>>) {
+        // Rust does not have tail-call optimization guarantees,
+        // so we have to use a loop here, in order not to blow the stack.
+        'outer: loop {
+            let mut previous_node_ptr = &self.head;
+            let mut current_ptr = self.head.load(SeqCst, _pin);
+            if current_ptr.is_null() {
+                return false;
+            }
+            let mut current: &Node<T> = unsafe { current_ptr.deref() };
+
+            loop {
+                let next_ptr = current.next.load(SeqCst, _pin).with_tag(0);
+                if *current.data == *value {
+                    // Now we want to remove the current node from the list.
+                    // We first need to mark this node as 'to-be-deleted',
+                    // by tagging its next pointer. When doing this, we avoid
+                    // that other threads are inserting something after the
+                    // current node, and us swinging the `next` pointer of
+                    // `previous` to the old `next` of the current node.
+                    let next_ptr = current.next.load(SeqCst, _pin);
+                    if current
+                        .next
+                        .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst, _pin)
+                        .is_err()
+                    {
+                        // Failed to mark the current node. Restart.
+                        continue 'outer;
+                    };
+                    let res =
+                        previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst, _pin);
+                    match res {
+                        Ok(_) => {
+                            let o = unsafe { current_ptr.into_owned() };
+                            f(o);
+                            return true;
+                        }
+                        Err(_) => {
+                            let pnp = previous_node_ptr.load(SeqCst, _pin);
+                            // Some new node in inserted behind us.
+                            // Unmark and restart.
+                            let res = current.next.compare_and_set(
+                                next_ptr.with_tag(1),
+                                next_ptr,
+                                SeqCst,
+                                _pin,
+                            );
+                            if res.is_err() {
+                                panic!("coulnd't untag ptr. WTF?");
+                            }
+                            continue 'outer;
+                        }
+                    }
+                } else {
+                    previous_node_ptr = &current.next;
+                    current_ptr = next_ptr;
+                    if current_ptr.is_null() {
+                        // we've reached the end of the list, without finding our value.
+                        return false;
+                    }
+                    current = unsafe { current_ptr.deref() };
+                }
+            }
+        }
+    }
+
     /// Return `true` if the list contains the given value.
     pub fn contains<'scope>(&self, value: &T, _pin: Pin<'scope>) -> bool {
         let previous_atomic: &Atomic<Node<T>> = &self.head;

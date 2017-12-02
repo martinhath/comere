@@ -9,7 +9,7 @@ use std::env;
 use comere::ebr::pin;
 use comere::ebr::queue::Queue;
 
-const BENCH_NAME: &str = "queue-transport";
+const BENCH_NAME: &str = "queue-transfer";
 
 fn main() {
     let num_threads: usize = env::args().nth(1)

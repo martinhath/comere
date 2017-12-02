@@ -151,7 +151,6 @@ where
                 {
                     if previous_node_ptr.load(SeqCst) != current_ptr {
                         drop(curr_hp); // explicit drop here. Do we need it?
-                        // println!("remove::validate failed. restart.");
                         continue 'outer;
                     }
                 }
@@ -170,7 +169,6 @@ where
                         .is_err()
                     {
                         // Failed to mark the current node. Restart.
-                        // println!("failed to mark current node. restart.");
                         continue 'outer;
                     };
                     let res = previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);

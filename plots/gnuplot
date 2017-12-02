@@ -13,13 +13,13 @@ set terminal pdf size 10cm,10cm
 
 
 set title "Timings for EBR (transfer)"
-set output 'queue-transport-ebr.pdf'
-plot for [i=1:4] 'queue-transport-ebr' using (i):i notitle
+set output 'queue-transfer-ebr.pdf'
+plot for [i=1:4] 'queue-transfer-ebr' using (i):i notitle
 
 set title "Timings for crossbeam (transfer)"
-set output 'queue-transport-crossbeam.pdf'
-plot for [i=1:4] 'queue-transport-crossbeam' using (i):i notitle
+set output 'queue-transfer-crossbeam.pdf'
+plot for [i=1:4] 'queue-transfer-crossbeam' using (i):i notitle
 
 set title "Timings for HP (transfer)"
-set output 'queue-transport-hp.pdf'
-plot for [i=1:4] 'queue-transport-hp' using (i):i notitle
+set output 'queue-transfer-hp.pdf'
+plot for [i=1:4] 'queue-transfer-hp' using (i):i notitle

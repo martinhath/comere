@@ -13,7 +13,7 @@ use std::mem::{forget, drop, ManuallyDrop};
 
 ///
 /// The number of hazard pointers for each thread.
-const NUM_HP: usize = 3;
+const NUM_HP: usize = 5;
 
 /// Data each thread needs to keep track of the hazard pointers.  We must use atomics here; if we
 /// do not we will have race conditions when one threads scans, and another thread edits its entry.
@@ -24,12 +24,12 @@ pub struct ThreadEntry {
 }
 
 impl ThreadEntry {
-    fn new() -> Self {
+    fn new(id: usize) -> Self {
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
             let mut entry = Self {
                 hazard_pointers: ::std::mem::uninitialized(),
-                thread_id: get_next_thread_id(),
+                thread_id: id,
             };
             use std::ptr::write;
             for i in 0..NUM_HP {
@@ -46,8 +46,10 @@ impl PartialEq for ThreadEntry {
     }
 }
 
+#[derive(Debug)]
 struct ThreadLocal {
     thread_marker: *const ThreadEntry,
+    id: usize,
 }
 
 impl ThreadLocal {
@@ -55,10 +57,12 @@ impl ThreadLocal {
     fn marker(&mut self) -> &'static mut ThreadEntry {
         let mut marker_ptr = self.thread_marker;
         if marker_ptr.is_null() {
-            marker_ptr = ENTRIES.insert(ThreadEntry::new()).as_raw();
+            let te = ThreadEntry::new(self.id);
+            marker_ptr = ENTRIES.insert(te).as_raw();
             self.thread_marker = marker_ptr;
         }
         unsafe {
+            // TODO: transmute from *const to *mut !!! Bad idea!
             let ptr = ::std::mem::transmute::<*const ThreadEntry, *mut ThreadEntry>(marker_ptr);
             // This is safe, since we've just made sure it isn't null.
             &mut *ptr
@@ -67,32 +71,57 @@ impl ThreadLocal {
 }
 
 pub fn marker() -> &'static mut ThreadEntry {
-    THREAD_LOCAL.with(|tl| tl.borrow_mut().marker())
+    let marker = THREAD_LOCAL.with(|tl| tl.borrow_mut().marker());
+    marker
 }
 
-// impl Drop for ThreadLocal {
-//     fn drop(&mut self) {
-//         match unsafe { self.thread_marker.as_ref() } {
-//             Some(thread_local) => {
-//                 ENTRIES.remove(thread_local);
-//             }
-//             None => {}
-//         }
-//     }
-// }
+fn remove_thread_local() {
+    let marker = marker();
+    let ret = ENTRIES.remove(marker);
+}
+
+use std::sync::mpsc::{channel, Sender, Receiver};
+
+pub struct JoinHandle<T> {
+    thread: ::std::thread::JoinHandle<T>,
+    sender: Sender<()>,
+}
+
+impl<T> JoinHandle<T> {
+    pub fn join(self) -> ::std::thread::Result<T> {
+        self.sender.send(());
+        self.thread.join()
+    }
+}
+
+pub fn spawn<F, T>(f: F) -> JoinHandle<T>
+where
+    F: FnOnce() -> T,
+    F: Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = channel();
+    JoinHandle {
+        thread: ::std::thread::spawn(move || {
+            let res = f();
+            if let Ok(_) = rx.recv() {
+                remove_thread_local();
+            }
+            res
+
+        }),
+        sender: tx,
+    }
+}
 
 use std::cell::RefCell;
 thread_local! {
-    /// A thread local pointer to the thread's entry in the global entry list. This pointer
-    /// may be null, but will be set during the first call to `get_entry`.
-    static ENTRY_PTR: RefCell<atomic::Ptr<'static, ThreadEntry>> = {
-        RefCell::new(atomic::Ptr::null())
-    };
     static THREAD_LOCAL: RefCell<ThreadLocal> = {
-        println!("entries in list: {}", ENTRIES.iter().count());
-        RefCell::new(ThreadLocal {
+        let tl = ThreadLocal {
             thread_marker: ::std::ptr::null(),
-        })
+            id: get_next_thread_id(),
+        };
+        RefCell::new(tl)
     }
 }
 
@@ -132,7 +161,6 @@ impl Garbage {
     }
 }
 
-
 #[cfg(not(feature = "hp-wait"))]
 lazy_static! {
     // This queue is `usize`, because we do not know what type the HP is pointing to.
@@ -170,4 +198,10 @@ fn free_from_queue() {
             return;
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum HazardError {
+    NoSpace,
+    NotFound,
 }

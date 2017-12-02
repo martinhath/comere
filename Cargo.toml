@@ -7,26 +7,26 @@ authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
 lazy_static = "*"
 bench = { path = './bench' }
 crossbeam = "*"
+bencher = "*"
 
 [dev-dependencies]
 rand = "*"
-bencher = "*"
 time = "*"
 
 [profile.bench]
 debug = true
 
 [[bin]]
-name = "queue-transport-ebr"
-path = "benches/queue-transport-ebr.rs"
+name = "queue-transfer-ebr"
+path = "benches/queue-transfer-ebr.rs"
 
 [[bin]]
-name = "queue-transport-crossbeam"
-path = "benches/queue-transport-crossbeam.rs"
+name = "queue-transfer-crossbeam"
+path = "benches/queue-transfer-crossbeam.rs"
 
 [[bin]]
-name = "queue-transport-hp"
-path = "benches/queue-transport-hp.rs"
+name = "queue-transfer-hp"
+path = "benches/queue-transfer-hp.rs"
 
 [[bench]]
 name = "queue"

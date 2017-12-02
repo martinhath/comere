@@ -1,7 +1,7 @@
 #!/bin/bash
 
 THREADS="1 2 4 8"
-BENCHES="queue-transport"
+BENCHES="queue-transfer"
 VARIANTS="crossbeam ebr hp"
 
 for variant in $(echo "$VARIANTS"); do

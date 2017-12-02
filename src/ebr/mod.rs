@@ -365,14 +365,16 @@ impl LocalState {
     }
 }
 
-// TODO: find out how to clean up the thread data.
-// impl Drop for LocalState {
-//     fn drop(&mut self) {
-//         let p = Pin::fake();
-//         let m = self.marker(p);
-//         self.add_garbage(GLOBAL.pins.remove(m, p).unwrap(), p);
-//     }
-// }
+impl Drop for LocalState {
+    fn drop(&mut self) {
+        let p = Pin::fake();
+        let m = self.marker(p);
+        GLOBAL.pins.remove_with(m, p, |o| {
+            // TODO: it is not safe to simply drop the Owned here, as some thread may iterate over
+            // the global list.
+        });
+    }
+}
 
 thread_local! {
     static LOCAL_EPOCH: RefCell<LocalState> = {

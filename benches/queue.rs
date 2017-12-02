@@ -55,6 +55,7 @@ mod nothing {
 mod hp {
     use super::Bencher;
     use comere::hp::queue::Queue;
+    use comere::hp;
     use comere::hp::*;
 
     use std::sync::{Arc, Condvar, Mutex};
@@ -83,44 +84,27 @@ mod hp {
     }
 
     pub fn transfer_n(b: &mut Bencher, n_threads: usize) {
-        b.bench_n(1, |_b| {
-            const NUM_ELEMENTS: usize = 256 * 256;
-            let source = Arc::new(Queue::new());
-            for i in 0..NUM_ELEMENTS {
-                source.push(i);
-            }
-            let sink = Arc::new(Queue::new());
-            let pair = Arc::new((Mutex::new(false), Condvar::new()));
-            let mut threads = Vec::with_capacity(n_threads);
-            for _ in 0..n_threads {
-                let p = pair.clone();
-                let source = source.clone();
-                let sink = sink.clone();
-                let handle = ::std::thread::spawn(move || {
-                    let &(ref lock, ref cvar) = &*p;
-                    let mut started = lock.lock().unwrap();
-                    while !*started {
-                        started = cvar.wait(started).unwrap();
-                    }
-                    drop(started);
-                    while let Some(i) = source.pop() {
-                        sink.push(i);
-                    }
-                });
-                threads.push(handle);
-            }
-            _b.iter(|| {
-                let &(ref lock, ref cvar) = &*pair;
-                let mut started = lock.lock().unwrap();
-                *started = true;
-                drop(started);
-                cvar.notify_all();
-                for i in (0..n_threads).rev() {
-                    let t = threads.remove(i);
-                    let _ = t.join();
+        const NUM_ELEMENTS: usize = 256 * 256;
+        let source = Arc::new(Queue::new());
+        for i in 0..NUM_ELEMENTS {
+            source.push(i);
+        }
+        let sink = Arc::new(Queue::new());
+        b.bench_n(1, |b| {
+            b.iter(|| {
+                let threads: Vec<hp::JoinHandle<()>> = (0..n_threads)
+                    .map(|_i| {
+                        let source = source.clone();
+                        let sink = sink.clone();
+                        hp::spawn(move || while let Some(i) = source.pop() {
+                            sink.push(i);
+                        })
+                    })
+                    .collect();
+                for thread in threads {
+                    thread.join().unwrap();
                 }
             });
-
         });
     }
 
