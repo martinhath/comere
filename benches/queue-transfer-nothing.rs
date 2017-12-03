@@ -4,8 +4,7 @@ extern crate bench;
 use std::sync::{Arc, Barrier};
 use std::env;
 
-use comere::hp::queue::Queue;
-use comere::hp;
+use comere::nothing::queue::Queue;
 
 const BENCH_NAME: &str = "queue-transfer";
 
@@ -45,7 +44,6 @@ fn main() {
             })
         }));
     });
-
     let between_barrier = barrier.clone();
     let between_source = source.clone();
     let between_sink = sink.clone();

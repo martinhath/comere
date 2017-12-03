@@ -443,7 +443,7 @@ where
         // TODO: reset this number to something higher
         // probably also don't use mod, but if we've pinned `n` times
         // without incrementing the epoch, we'll try?
-        if pin_count % 1000 == 0 && GLOBAL.can_increment_epoch(p) {
+        if pin_count % 64 == 0 && GLOBAL.can_increment_epoch(p) {
             GLOBAL.increment_epoch(global_epoch, p);
         }
     });

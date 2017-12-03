@@ -28,6 +28,10 @@ path = "benches/queue-transfer-crossbeam.rs"
 name = "queue-transfer-hp"
 path = "benches/queue-transfer-hp.rs"
 
+[[bin]]
+name = "benches-hp"
+path = "benches/hp.rs"
+
 [[bench]]
 name = "queue"
 harness = false

@@ -114,6 +114,25 @@ where
     }
 }
 
+use bench::Spawner;
+
+impl<T> Spawner for JoinHandle<T> {
+    type Handle = JoinHandle<T>;
+    type Return = T;
+    type Result = ::std::thread::Result<T>;
+
+    fn spawn<F>(f: F) -> Self::Handle where
+        F: FnOnce() -> Self::Return,
+        F: Send + 'static,
+        Self::Return: Send + 'static {
+            spawn(f)
+        }
+
+    fn join(self) -> Self::Result {
+        self.join()
+    }
+}
+
 use std::cell::RefCell;
 thread_local! {
     static THREAD_LOCAL: RefCell<ThreadLocal> = {

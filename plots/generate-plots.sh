@@ -2,7 +2,11 @@
 
 THREADS="1 2 4 8"
 BENCHES="queue-transfer"
-VARIANTS="crossbeam ebr hp"
+if [[ "$1" =~ ^$ ]]; then
+  VARIANTS="crossbeam ebr hp"
+else
+  VARIANTS="$1"
+fi
 
 for variant in $(echo "$VARIANTS"); do
   for bench in $(echo "$BENCHES"); do
