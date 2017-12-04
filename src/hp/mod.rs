@@ -7,9 +7,10 @@ pub mod queue;
 pub mod list;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Sender};
+use std::mem::{self, drop};
 
 use self::atomic::{Owned, HazardPtr};
-use std::mem::{forget, drop, ManuallyDrop};
 
 ///
 /// The number of hazard pointers for each thread.
@@ -80,8 +81,6 @@ fn remove_thread_local() {
     let ret = ENTRIES.remove(marker);
 }
 
-use std::sync::mpsc::{channel, Sender, Receiver};
-
 pub struct JoinHandle<T> {
     thread: ::std::thread::JoinHandle<T>,
     sender: Sender<()>,
@@ -89,7 +88,7 @@ pub struct JoinHandle<T> {
 
 impl<T> JoinHandle<T> {
     pub fn join(self) -> ::std::thread::Result<T> {
-        self.sender.send(());
+        assert!(self.sender.send(()).is_ok());
         self.thread.join()
     }
 }

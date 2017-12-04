@@ -6,9 +6,10 @@ mod common;
 use common::*;
 
 use std::env;
+use std::thread;
 
-use comere::hp;
-use comere::hp::queue::Queue;
+use comere::ebr;
+use comere::ebr::queue::Queue;
 
 const NUM_ELEMENTS: usize = 256 * 256;
 
@@ -20,15 +21,17 @@ fn queue_push(num_threads: usize) -> bench::BenchStats {
     let state = State { queue: Queue::new() };
 
     fn queue_push(state: &State) {
-        while let Some(_) = state.queue.pop() {}
+        while let Some(_) = ebr::pin(|pin| state.queue.pop(pin)) {}
     }
 
-    let mut b = bench::ThreadBencher::<State, hp::JoinHandle<()>>::new(state, num_threads);
+    let mut b = bench::ThreadBencher::<State, thread::JoinHandle<()>>::new(state, num_threads);
     b.before(|state| {
-        while let Some(_) = state.queue.pop() {}
-        for i in 0..NUM_ELEMENTS {
-            state.queue.push(i as u32);
-        }
+        ebr::pin(|pin| {
+            while let Some(_) = state.queue.pop(pin) {}
+            for i in 0..NUM_ELEMENTS {
+                state.queue.push(i as u32, pin);
+            }
+        });
     });
     b.thread_bench(queue_push);
     b.into_stats()
@@ -46,17 +49,19 @@ fn queue_transfer(num_threads: usize) -> bench::BenchStats {
     };
 
     fn transfer(state: &State) {
-        while let Some(i) = state.source.pop() {
-            state.sink.push(i);
+        while let Some(i) = ebr::pin(|pin| state.source.pop(pin)) {
+            ebr::pin(|pin| state.sink.push(i, pin));
         }
     }
 
-    let mut b = bench::ThreadBencher::<State, hp::JoinHandle<()>>::new(state, num_threads);
+    let mut b = bench::ThreadBencher::<State, thread::JoinHandle<()>>::new(state, num_threads);
     b.before(|state| {
-        while let Some(_) = state.sink.pop() {}
-        for i in 0..NUM_ELEMENTS {
-            state.source.push(i as u32);
-        }
+        ebr::pin(|pin| {
+            while let Some(_) = state.sink.pop(pin) {}
+            for i in 0..NUM_ELEMENTS {
+                state.source.push(i as u32, pin);
+            }
+        });
     });
     b.thread_bench(transfer);
     b.into_stats()
@@ -65,7 +70,7 @@ fn queue_transfer(num_threads: usize) -> bench::BenchStats {
 fn nop(num_threads: usize) -> bench::BenchStats {
     #[inline(never)]
     fn nop(_s: &()) {}
-    let mut b = bench::ThreadBencher::<(), hp::JoinHandle<()>>::new((), num_threads);
+    let mut b = bench::ThreadBencher::<(), thread::JoinHandle<()>>::new((), num_threads);
     b.thread_bench(nop);
     b.into_stats()
 }
@@ -79,7 +84,7 @@ fn main() {
 
     let stats = run!(num_threads, nop, queue_push, queue_transfer);
 
-    println!("HP");
+    println!("EBR");
     println!("name;{}", bench::BenchStats::csv_header());
     for &(ref stats, ref name) in &stats {
         println!("{};{}", name, stats.csv());

@@ -10,6 +10,109 @@ extern crate time;
 
 use std::sync::{Arc, Barrier};
 
+pub struct BenchStats {
+    samples: Vec<u64>,
+}
+
+impl BenchStats {
+    fn len(&self) -> u64 {
+        self.samples.len() as u64
+    }
+
+    pub fn average(&self) -> u64 {
+        self.samples.iter().cloned().sum::<u64>() / self.len()
+    }
+
+    pub fn variance(&self) -> u64 {
+        let avg = self.average();
+        let s = self.samples
+            .iter()
+            .cloned()
+            .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
+            .sum::<u64>() / self.len();
+        (s as f32).sqrt() as u64
+    }
+
+    pub fn min(&self) -> u64 {
+        self.samples.iter().cloned().min().unwrap()
+    }
+
+    pub fn max(&self) -> u64 {
+        self.samples.iter().cloned().max().unwrap()
+    }
+
+    pub fn above_avg(&self) -> u64 {
+        let avg = self.average();
+        self.samples.iter().filter(|&&s| s > avg).count() as u64
+    }
+
+    pub fn below_avg(&self) -> u64 {
+        let avg = self.average();
+        self.samples.iter().filter(|&&s| s < avg).count() as u64
+    }
+
+    pub fn report(&self) -> String {
+        format!(
+            "{} ns/iter (+/- {}) min={} max={} above={} below={}",
+            Self::fmt_thousands_sep(self.average()),
+            Self::fmt_thousands_sep(self.variance()),
+            self.min(),
+            self.max(),
+            self.above_avg(),
+            self.below_avg()
+        )
+    }
+
+    pub fn csv_header() -> String {
+        format!(
+            "{};{};{};{};{};{}",
+            "average",
+            "variance",
+            "min",
+            "max",
+            "# above avg",
+            "# below avg"
+        )
+    }
+
+    pub fn csv(&self) -> String {
+        format!(
+            "{};{};{};{};{};{}",
+            Self::fmt_thousands_sep(self.average()),
+            Self::fmt_thousands_sep(self.variance()),
+            self.min(),
+            self.max(),
+            self.above_avg(),
+            self.below_avg()
+        )
+    }
+
+    // This is borrowed from `test::Bencher` :)
+    fn fmt_thousands_sep(mut n: u64) -> String {
+        let sep = ',';
+        use std::fmt::Write;
+        let mut output = String::new();
+        let mut trailing = false;
+        for &pow in &[9, 6, 3, 0] {
+            let base = 10u64.pow(pow);
+            if pow == 0 || trailing || n / base != 0 {
+                if !trailing {
+                    output.write_fmt(format_args!("{}", n / base)).unwrap();
+                } else {
+                    output.write_fmt(format_args!("{:03}", n / base)).unwrap();
+                }
+                if pow != 0 {
+                    output.push(sep);
+                }
+                trailing = true;
+            }
+            n %= base;
+        }
+
+        output
+    }
+}
+
 pub struct Bencher<S> {
     samples: Vec<u64>,
     n: usize,
@@ -50,35 +153,7 @@ impl<S> Bencher<S> {
             (self.between)(&mut state);
         }
         (self.post)(&mut state);
-        self.print();
         state
-    }
-
-    fn print(&self) {
-        let len = self.samples.len() as u64;
-        let sum = self.samples.iter().cloned().sum::<u64>();
-        let avg = sum / len;
-        let var = {
-            let s = self.samples
-                .iter()
-                .cloned()
-                .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
-                .sum::<u64>() / len;
-            (s as f32).sqrt() as u64
-        };
-        let max = self.samples.iter().cloned().max().unwrap();
-        let min = self.samples.iter().cloned().min().unwrap();
-        let above = self.samples.iter().filter(|&&s| s > avg).count();
-        let below = self.samples.len() - above;
-        println!(
-            "Bench: ................  {} ns/iter (+/- {}) min={} max={} above={} below={}",
-            fmt_thousands_sep(avg),
-            fmt_thousands_sep(var),
-            min,
-            max,
-            above,
-            below
-        );
     }
 
     pub fn output_samples<W: ::std::io::Write>(
@@ -101,6 +176,10 @@ impl<S> Bencher<S> {
 
     pub fn between<F: 'static + Fn(&mut S)>(&mut self, f: F) {
         self.between = Box::new(f);
+    }
+
+    pub fn into_stats(self) -> BenchStats {
+        BenchStats { samples: self.samples }
     }
 }
 
@@ -292,59 +371,10 @@ where
         self.after = Box::new(f);
     }
 
-    pub fn report(&self) -> String {
-        let len = self.samples.len() as u64;
-        let sum = self.samples.iter().cloned().sum::<u64>();
-        let avg = sum / len;
-        let var = {
-            let s = self.samples
-                .iter()
-                .cloned()
-                .map(|s| (if s < avg { (avg - s) } else { s - avg }).pow(2))
-                .sum::<u64>() / len;
-            (s as f32).sqrt() as u64
-        };
-        let max = self.samples.iter().cloned().max().unwrap();
-        let min = self.samples.iter().cloned().min().unwrap();
-        let above = self.samples.iter().filter(|&&s| s > avg).count();
-        let below = self.samples.len() - above;
-        format!(
-            "Bench: ................  {} ns/iter (+/- {}) min={} max={} above={} below={}",
-            fmt_thousands_sep(avg),
-            fmt_thousands_sep(var),
-            min,
-            max,
-            above,
-            below
-        )
+    pub fn into_stats(self) -> BenchStats {
+        BenchStats { samples: self.samples }
     }
 }
-
-// This is borrowed from `test::Bencher` :)
-fn fmt_thousands_sep(mut n: u64) -> String {
-    let sep = ',';
-    use std::fmt::Write;
-    let mut output = String::new();
-    let mut trailing = false;
-    for &pow in &[9, 6, 3, 0] {
-        let base = 10u64.pow(pow);
-        if pow == 0 || trailing || n / base != 0 {
-            if !trailing {
-                output.write_fmt(format_args!("{}", n / base)).unwrap();
-            } else {
-                output.write_fmt(format_args!("{:03}", n / base)).unwrap();
-            }
-            if pow != 0 {
-                output.push(sep);
-            }
-            trailing = true;
-        }
-        n %= base;
-    }
-
-    output
-}
-
 
 mod test {
     use super::*;

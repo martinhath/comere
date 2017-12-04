@@ -17,6 +17,18 @@ time = "*"
 debug = true
 
 [[bin]]
+name = "benches-hp"
+path = "benches/hp.rs"
+
+[[bin]]
+name = "benches-ebr"
+path = "benches/ebr.rs"
+
+[[bin]]
+name = "benches-crossbeam"
+path = "benches/crossbeam.rs"
+
+[[bin]]
 name = "queue-transfer-ebr"
 path = "benches/queue-transfer-ebr.rs"
 
@@ -27,10 +39,6 @@ path = "benches/queue-transfer-crossbeam.rs"
 [[bin]]
 name = "queue-transfer-hp"
 path = "benches/queue-transfer-hp.rs"
-
-[[bin]]
-name = "benches-hp"
-path = "benches/hp.rs"
 
 [[bench]]
 name = "queue"

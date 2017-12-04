@@ -48,7 +48,7 @@ fn main() {
         pin(|pin| for i in 0..NUM_ELEMENTS {
             unsafe { (*state.source.get()).push(i, pin) };
         });
-        for i in 0..num_threads {
+        for _ in 0..num_threads {
             let bench_state = state.state.clone();
             let condvar = state.condvar.clone();
             let barrier = state.barrier.clone();
