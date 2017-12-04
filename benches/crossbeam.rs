@@ -10,16 +10,36 @@ use std::thread;
 
 use crossbeam::sync::MsQueue;
 
-const NUM_ELEMENTS: usize = 256 * 256;
-
 fn queue_push(num_threads: usize) -> bench::BenchStats {
+    struct State {
+        queue: MsQueue<u32>,
+        num_threads: usize,
+    }
+
+    let state = State { queue: MsQueue::new() , num_threads};
+
+    fn queue_push(state: &State) {
+        for i in 0..NUM_ELEMENTS / state.num_threads {
+            state.queue.push(i as u32);
+        }
+    }
+
+    let mut b = bench::ThreadBencher::<State, thread::JoinHandle<()>>::new(state, num_threads);
+    b.before(|state| {
+        while let Some(_) = state.queue.try_pop() {}
+    });
+    b.thread_bench(queue_push);
+    b.into_stats()
+}
+
+fn queue_pop(num_threads: usize) -> bench::BenchStats {
     struct State {
         queue: MsQueue<u32>,
     }
 
     let state = State { queue: MsQueue::new() };
 
-    fn queue_push(state: &State) {
+    fn queue_pop(state: &State) {
         while let Some(_) = state.queue.try_pop() {}
     }
 
@@ -30,7 +50,7 @@ fn queue_push(num_threads: usize) -> bench::BenchStats {
             state.queue.push(i as u32);
         }
     });
-    b.thread_bench(queue_push);
+    b.thread_bench(queue_pop);
     b.into_stats()
 }
 
@@ -77,7 +97,7 @@ fn main() {
         .parse()
         .unwrap_or(4);
 
-    let stats = run!(num_threads, nop, queue_push, queue_transfer);
+    let stats = run!(num_threads, nop, queue_push, queue_pop, queue_transfer);
 
     println!("Crossbeam");
     println!("name;{}", bench::BenchStats::csv_header());

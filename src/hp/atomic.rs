@@ -1078,7 +1078,7 @@ where
         while self.scan() {
             ::std::thread::yield_now();
         }
-        self.into_owned()
+        self.into_owned();
     }
 
     #[cfg(not(feature = "hp-wait"))]

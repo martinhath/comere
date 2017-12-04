@@ -8,7 +8,7 @@ pub mod list;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::mem::{self, drop};
+use std::mem::drop;
 
 use self::atomic::{Owned, HazardPtr};
 
@@ -187,6 +187,7 @@ lazy_static! {
     };
 }
 
+#[cfg(not(feature = "hp-wait"))]
 fn defer_hp<T>(hp: atomic::HazardPtr<T>)
 where
     T: 'static,
@@ -196,6 +197,7 @@ where
     }
 }
 
+#[cfg(not(feature = "hp-wait"))]
 fn free_from_queue() {
     const N: usize = 3;
     for _ in 0..N {
