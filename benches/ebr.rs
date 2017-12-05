@@ -99,11 +99,13 @@ fn nop(num_threads: usize) -> bench::BenchStats {
 }
 
 fn main() {
-    let num_threads: usize = env::args()
-        .nth(1)
-        .unwrap_or("4".to_string())
-        .parse()
+    let args = env::args().collect::<Vec<_>>();
+    let num_threads: usize = args.get(1)
+        .ok_or(())
+        .and_then(|s| s.parse().map_err(|_| ()))
         .unwrap_or(4);
+
+    let gnuplot_output = args.get(2);
 
     let stats = run!(num_threads, nop, queue_push, queue_pop, queue_transfer);
 
@@ -111,5 +113,12 @@ fn main() {
     println!("name;{}", bench::BenchStats::csv_header());
     for &(ref stats, ref name) in &stats {
         println!("{};{}", name, stats.csv());
+    }
+
+    if let Some(fname) = gnuplot_output {
+        use std::io::Write;
+        use std::fs::File;
+        let mut f = File::create(fname).unwrap();
+        f.write_all(bench::gnuplot(&stats).as_bytes()).unwrap();
     }
 }

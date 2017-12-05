@@ -16,7 +16,10 @@ fn queue_push(num_threads: usize) -> bench::BenchStats {
         num_threads: usize,
     }
 
-    let state = State { queue: MsQueue::new() , num_threads};
+    let state = State {
+        queue: MsQueue::new(),
+        num_threads,
+    };
 
     fn queue_push(state: &State) {
         for i in 0..NUM_ELEMENTS / state.num_threads {
@@ -25,9 +28,7 @@ fn queue_push(num_threads: usize) -> bench::BenchStats {
     }
 
     let mut b = bench::ThreadBencher::<State, thread::JoinHandle<()>>::new(state, num_threads);
-    b.before(|state| {
-        while let Some(_) = state.queue.try_pop() {}
-    });
+    b.before(|state| while let Some(_) = state.queue.try_pop() {});
     b.thread_bench(queue_push);
     b.into_stats()
 }
@@ -91,11 +92,13 @@ fn nop(num_threads: usize) -> bench::BenchStats {
 }
 
 fn main() {
-    let num_threads: usize = env::args()
-        .nth(1)
-        .unwrap_or("4".to_string())
-        .parse()
+    let args = env::args().collect::<Vec<_>>();
+    let num_threads: usize = args.get(1)
+        .ok_or(())
+        .and_then(|s| s.parse().map_err(|_| ()))
         .unwrap_or(4);
+
+    let gnuplot_output = args.get(2);
 
     let stats = run!(num_threads, nop, queue_push, queue_pop, queue_transfer);
 
@@ -103,5 +106,12 @@ fn main() {
     println!("name;{}", bench::BenchStats::csv_header());
     for &(ref stats, ref name) in &stats {
         println!("{};{}", name, stats.csv());
+    }
+
+    if let Some(fname) = gnuplot_output {
+        use std::io::Write;
+        use std::fs::File;
+        let mut f = File::create(fname).unwrap();
+        f.write_all(bench::gnuplot(&stats).as_bytes()).unwrap();
     }
 }

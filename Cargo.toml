@@ -36,26 +36,6 @@ path = "benches/crossbeam.rs"
 name = "benches-nothing"
 path = "benches/nothing.rs"
 
-[[bin]]
-name = "queue-transfer-ebr"
-path = "benches/queue-transfer-ebr.rs"
-
-[[bin]]
-name = "queue-transfer-crossbeam"
-path = "benches/queue-transfer-crossbeam.rs"
-
-[[bin]]
-name = "queue-transfer-hp"
-path = "benches/queue-transfer-hp.rs"
-
-[[bench]]
-name = "queue"
-harness = false
-
-[[bench]]
-name = "list"
-harness = false
-
 [features]
 default = []
 # Should the HP implmementation repeatedly scan and wait for other threads to unregister a HP when

@@ -113,6 +113,24 @@ impl BenchStats {
     }
 }
 
+/// Turn the statistics given into a gnuplot data string.
+pub fn gnuplot(stats: &[(BenchStats, String)]) -> String {
+    let mut s = String::new();
+    let lines = stats.iter().map(|b| b.0.samples.len()).max().unwrap_or(0);
+    for &(_, ref name) in stats {
+        s.push_str(&format!("#{} ", name));
+    }
+    s.push('\n');
+    for i in 0..lines {
+        for &(ref stat, _) in stats {
+            s.push_str(&format!("{} ", stat.samples.get(i).cloned().unwrap_or(0)));
+        }
+        s.push('\n');
+    }
+
+    s
+}
+
 pub struct Bencher<S> {
     samples: Vec<u64>,
     n: usize,
@@ -320,7 +338,7 @@ where
         Self {
             state,
             samples: vec![],
-            n: 100,
+            n: 250,
             threads,
             senders,
             receivers,
@@ -372,6 +390,8 @@ where
     }
 
     pub fn into_stats(self) -> BenchStats {
+        // self.samples.sort();
+        // self.samples = self.samples[100..900].iter().cloned().collect();
         BenchStats { samples: self.samples }
     }
 }
