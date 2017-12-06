@@ -497,35 +497,4 @@ mod test {
             assert_eq!(i, n);
         }
     }
-
-    #[test]
-    fn pop_if_push() {
-        const N_THREADS: usize = 16;
-        const N: usize = 1024 * 1024;
-
-        let q = Arc::new(Queue::new());
-
-        let threads = (0..N_THREADS)
-            .map(|thread_id| {
-                let q = q.clone();
-                spawn(move || {
-                    let push = thread_id % 2 == 0;
-
-                    pin(|pin| {
-                        if push {
-                            q.push(thread_id, pin);
-                        } else {
-                            if let Some(i) = q.pop(pin) {
-                                // register
-                            }
-                        }
-                    });
-                })
-            })
-            .collect::<Vec<_>>();
-
-        for t in threads.into_iter() {
-            assert!(t.join().is_ok());
-        }
-    }
 }

@@ -16,12 +16,6 @@ extern crate lazy_static;
 #[cfg(test)]
 extern crate rand;
 
-#[allow(unused_variables)]
-#[allow(dead_code)]
 pub mod nothing;
-#[allow(unused_variables)]
-#[allow(dead_code)]
 pub mod ebr;
-#[allow(unused_variables)]
-#[allow(dead_code)]
 pub mod hp;

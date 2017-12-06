@@ -179,7 +179,6 @@ where
                             return Some(unsafe { current_ptr.into_owned() });
                         }
                         Err(_) => {
-                            let pnp = previous_node_ptr.load(SeqCst);
                             // Some new node in inserted behind us.
                             // Unmark and restart.
                             let res = current.next.compare_and_set(
@@ -212,7 +211,6 @@ where
 
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
-        let previous_atomic: &Atomic<Node<T>> = &self.head;
         let mut node_ptr = self.head.load(Relaxed);
         let mut node;
         while !node_ptr.is_null() {
@@ -272,7 +270,6 @@ impl<T> Drop for List<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::{thread_rng, Rng};
 
     use std::thread::spawn;
     use std::sync::Arc;
@@ -304,16 +301,13 @@ mod test {
     #[test]
     fn remove() {
         const N_THREADS: usize = 4;
-        const N: usize = 123; //1024 * 32; // * 1024;
-        const MAX: usize = 1024;
+        const N: usize = 1024 * 32; // * 1024;
 
         let list: Arc<List<usize>> = Arc::new(List::new());
 
-        let mut rng = thread_rng();
-
         // Prefill with some values
         for i in 0..N {
-            list.insert(rng.gen_range(0, MAX));
+            list.insert(i);
         }
         assert_eq!(list.iter().count(), N);
 
@@ -321,13 +315,9 @@ mod test {
             .map(|thread_id| {
                 let list = list.clone();
                 spawn(move || {
-                    let removals = [0; N];
-                    let mut rng = thread_rng();
-                    for i in 0..N {
-                        let a = rng.gen_range(0, MAX);
-                        list.remove(&a);
-                        let b = rng.gen_range(0, MAX);
-                        list.insert(b);
+                    for i in (0..N / N_THREADS).rev() {
+                        let n = i * N_THREADS + thread_id;
+                        assert!(list.remove(&n).is_some());
                     }
                 })
             })
@@ -357,7 +347,7 @@ mod test {
         }
 
         let threads = (0..N_THREADS)
-            .map(|thread_id| {
+            .map(|_thread_id| {
                 let source = source.clone();
                 let sink = sink.clone();
                 spawn(move || {

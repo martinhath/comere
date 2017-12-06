@@ -88,7 +88,6 @@ impl<T> List<T> {
 impl<T: PartialEq> List<T> {
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
-        let previous_atomic: &Atomic<Node<T>> = &self.head;
         let mut node_ptr = self.head.load(Relaxed);
         let mut node;
         while !node_ptr.is_null() {
@@ -139,7 +138,6 @@ impl<T: PartialEq> List<T> {
                     match res {
                         Ok(_) => return true,
                         Err(_) => {
-                            let pnp = previous_node_ptr.load(SeqCst);
                             // Some new node in inserted behind us.
                             // Unmark and restart.
                             let res = current.next.compare_and_set(

@@ -55,7 +55,8 @@ impl<T> Queue<T> {
         q
     }
 
-    // Enqueue, as described by MS. Performs the same as push (on x86).
+    /// Enqueue, as described by MS. Performs the same as push (on x86).
+    #[allow(dead_code)]
     fn enqueue(&self, t: T) {
         let node = Owned::new(Node::new(t)).into_ptr();
         let mut tail;
@@ -164,18 +165,18 @@ mod test {
     use super::*;
 
     struct Payload {
-        data: String,
+        _data: String,
     }
 
     impl Payload {
         fn new() -> Self {
-            Self { data: "payload".to_string() }
+            Self { _data: "payload".to_string() }
         }
     }
 
     #[test]
     fn can_construct_queue() {
-        let q: Queue<Payload> = Queue::new();
+        let _q: Queue<Payload> = Queue::new();
     }
 
     #[test]
@@ -210,19 +211,9 @@ mod test {
     #[test]
     fn st_queue_len() {
         let q: Queue<Payload> = Queue::new();
-        for i in 0..10 {
+        for _i in 0..10 {
             q.push(Payload::new(), None);
         }
         assert_eq!(q.len(), 10);
-    }
-
-    struct LargeStruct {
-        b: [u8; 1024 * 4],
-    }
-
-    impl LargeStruct {
-        fn new() -> Self {
-            Self { b: [0; 1024 * 4] }
-        }
     }
 }

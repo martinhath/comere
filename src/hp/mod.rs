@@ -79,6 +79,7 @@ pub fn marker() -> &'static mut ThreadEntry {
 fn remove_thread_local() {
     let marker = marker();
     let ret = ENTRIES.remove(marker);
+    assert!(ret.is_some());
 }
 
 pub struct JoinHandle<T> {

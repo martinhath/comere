@@ -34,10 +34,6 @@ impl<T> Node<T> {
             next: Default::default(),
         }
     }
-
-    fn data(&self) -> &T {
-        &*self.data
-    }
 }
 
 impl<T> Queue<T>
@@ -85,7 +81,8 @@ where
                     // Update `queue.tail`. If we fail here it's OK, since another
                     // thread could have helped by moving the tail pointer.
                     let _ = self.tail.compare_and_set(tail, new_node, Release);
-                    break;
+                    drop(tail_hp);
+                    return;
                 }
             }
         }
@@ -143,7 +140,7 @@ where
                         }
                         // TODO: we would rather want to loop here, instead of
                         // giving up if there is contention?
-                        Err(e) => continue 'outer,
+                        Err(_) => continue 'outer,
                     }
                 },
                 None => return None,
@@ -203,18 +200,18 @@ mod test {
     use super::*;
 
     struct Payload {
-        data: String,
+        _data: String,
     }
 
     impl Payload {
         fn new() -> Self {
-            Self { data: "payload".to_string() }
+            Self { _data: "payload".to_string() }
         }
     }
 
     #[test]
     fn can_construct_queue() {
-        let q: Queue<Payload> = Queue::new();
+        let _: Queue<Payload> = Queue::new();
     }
 
     #[test]
@@ -240,20 +237,10 @@ mod test {
     #[test]
     fn st_queue_len() {
         let q: Queue<Payload> = Queue::new();
-        for i in 0..10 {
+        for _ in 0..10 {
             q.push(Payload::new());
         }
         assert_eq!(q.len(), 10);
-    }
-
-    struct LargeStruct {
-        b: [u8; 1024 * 4],
-    }
-
-    impl LargeStruct {
-        fn new() -> Self {
-            Self { b: [0; 1024 * 4] }
-        }
     }
 
     #[derive(Debug)]
@@ -268,7 +255,7 @@ mod test {
     fn no_drop() {
         let q = Queue::new();
         let iters = 1024 * 1024;
-        for i in 0..iters {
+        for _i in 0..iters {
             q.push(NoDrop);
             let r = q.pop().unwrap();
             ::std::mem::forget(r);
@@ -291,7 +278,7 @@ mod test {
     fn single_drop() {
         let q = Queue::new();
         let iters = 1024 * 1024;
-        for i in 0..iters {
+        for _i in 0..iters {
             q.push(SingleDrop(false));
             q.pop();
         }
@@ -318,7 +305,7 @@ mod test {
     fn do_drop() {
         let q = Queue::new();
         let iters = 1024 * 1024;
-        for i in 0..iters {
+        for _i in 0..iters {
             let q = &q;
             q.push(MustDrop(&ATOMIC_COUNT));
             q.pop();
@@ -354,7 +341,7 @@ mod test {
         // threads, which should not happen, since all nubmers are only
         // once in the queue.
         let threads = (0..N_THREADS)
-            .map(|i| {
+            .map(|_i| {
                 let markers = markers.clone();
                 let q = q.clone();
                 spawn(move || while let Some(i) = q.pop() {
@@ -391,7 +378,7 @@ mod test {
         }
 
         let threads = (0..N_THREADS)
-            .map(|thread_id| {
+            .map(|_thread_id| {
                 let source = source.clone();
                 let sink = sink.clone();
                 spawn(move || {
@@ -402,7 +389,6 @@ mod test {
                     while let Some(i) = source.pop() {
                         sink.push(i);
                     }
-                    println!("thread {} is done", thread_id);
                 })
             })
             .collect::<Vec<_>>();
@@ -417,35 +403,6 @@ mod test {
         v.sort();
         for (i, n) in v.into_iter().enumerate() {
             assert_eq!(i, n);
-        }
-    }
-
-    #[test]
-    fn pop_if_push() {
-        const N_THREADS: usize = 16;
-        const N: usize = 1024 * 1024;
-
-        let q = Arc::new(Queue::new());
-
-        let threads = (0..N_THREADS)
-            .map(|thread_id| {
-                let q = q.clone();
-                spawn(move || {
-                    let push = thread_id % 2 == 0;
-
-                    if push {
-                        q.push(thread_id);
-                    } else {
-                        if let Some(i) = q.pop() {
-                            // register
-                        }
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        for t in threads.into_iter() {
-            assert!(t.join().is_ok());
         }
     }
 }
