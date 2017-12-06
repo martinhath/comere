@@ -13,9 +13,9 @@ use std::path::Path;
 
 mod benches;
 use benches::{nothing, hp, ebr, crossbeam as cb};
-pub const NUM_ELEMENTS: usize = 256;// * 256;
-pub const NUM_ELEMENTS_NOTHING: usize = 256;// * 256;
-pub const NUM_ELEMENTS_SMALLER: usize = 256;// * 4;
+pub const NUM_ELEMENTS: usize = 256 * 256;
+pub const NUM_ELEMENTS_NOTHING: usize = 256 * 256;
+pub const NUM_ELEMENTS_SMALLER: usize = 256 * 4;
 
 
 /// We need this, as somehow `(fn, String)` is not okay, while `(F(fn), String)` is.

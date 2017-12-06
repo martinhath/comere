@@ -11,6 +11,8 @@ extern crate time;
 use std::sync::{Arc, Barrier};
 use std::str::FromStr;
 
+const DEFAULT_NUM_SAMPLES: usize = 200;
+
 #[derive(Debug, Clone)]
 pub struct BenchStats {
     ident: BenchIdentifier,
@@ -407,7 +409,7 @@ where
         Self {
             state,
             samples: vec![],
-            n: 100,
+            n: DEFAULT_NUM_SAMPLES,
             threads,
             senders,
             receivers,
