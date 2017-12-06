@@ -1,5 +1,9 @@
 extern crate comere;
 extern crate bench;
+extern crate rand;
+#[macro_use]
+extern crate lazy_static;
+
 
 #[macro_use]
 mod common;
@@ -10,6 +14,9 @@ use std::thread;
 
 use comere::ebr;
 use comere::ebr::queue::Queue;
+use comere::ebr::list::List;
+
+use rand::Rng;
 
 fn queue_push(num_threads: usize) -> bench::BenchStats {
     struct State {
@@ -90,6 +97,54 @@ fn queue_transfer(num_threads: usize) -> bench::BenchStats {
     b.into_stats()
 }
 
+fn list_remove(num_threads: usize) -> bench::BenchStats {
+    struct State {
+        list: List<u32>,
+        num_threads: usize,
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::cell::RefCell;
+    lazy_static! {
+        static ref THREAD_COUNTER: AtomicUsize = { AtomicUsize::new(0) };
+    }
+
+    thread_local! {
+        static THREAD_ID: RefCell<usize> = {
+            RefCell::new(THREAD_COUNTER.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    let state = State {
+        list: List::new(),
+        num_threads,
+    };
+
+    fn remove(state: &State) {
+        let ti = THREAD_ID.with(|t| *t.borrow());
+        for i in 0..NUM_ELEMENTS_SMALLER / state.num_threads {
+            let n = (i * state.num_threads + ti) as u32;
+            let ret = ebr::pin(|pin| state.list.remove(&n, pin));
+            assert!(ret.is_some());
+        }
+    }
+
+    let mut b = bench::ThreadBencher::<State, thread::JoinHandle<()>>::new(state, num_threads);
+    b.before(|state| {
+        let mut rng = rand::thread_rng();
+        let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
+        rng.shuffle(&mut n);
+        ebr::pin(|pin| {
+            for &i in &n {
+                state.list.insert(i, pin);
+            }
+        });
+    });
+
+    b.thread_bench(remove);
+    b.into_stats()
+}
+
 fn nop(num_threads: usize) -> bench::BenchStats {
     #[inline(never)]
     fn nop(_s: &()) {}
@@ -107,7 +162,13 @@ fn main() {
 
     let gnuplot_output = args.get(2);
 
-    let stats = run!(num_threads, nop, queue_push, queue_pop, queue_transfer);
+    let stats = run!(num_threads,
+                     nop,
+                     list_remove,
+                     queue_push,
+                     queue_pop,
+                     queue_transfer
+                     );
 
     println!("EBR");
     println!("name;{}", bench::BenchStats::csv_header());

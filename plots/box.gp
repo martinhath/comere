@@ -9,7 +9,14 @@ set size square
 
 set pointsize 0.3
 
-set xtics ('Crossbeam' 1, 'EBR' 2, 'HP' 3, 'HP-Spin' 4)
+if (cols == 3) {
+  set xtics ('EBR' 1, 'HP' 2, 'HP-Spin' 3)
+}
+
+if (cols == 4) {
+  set xtics ('Crossbeam' 1, 'EBR' 2, 'HP' 3, 'HP-Spin' 4)
+}
+
 
 set terminal pdf size 10cm,10cm
 set title title

@@ -28,4 +28,5 @@ for n in $(echo "$THREADS"); do
   gnuplot -e "data='col-2'; cols=4; title='Queue::Push, t=$n';     output='queue-push-$n.pdf'" box.gp
   gnuplot -e "data='col-3'; cols=4; title='Queue::Pop, t=$n';      output='queue-pop-$n.pdf'" box.gp
   gnuplot -e "data='col-4'; cols=4; title='Queue::Transfer, t=$n'; output='queue-transfer-$n.pdf'" box.gp
+  gnuplot -e "data='col-5'; cols=3; title='List::Remove, t=$n';    output='list-remove-$n.pdf'" box.gp
 done

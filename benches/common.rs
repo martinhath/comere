@@ -19,4 +19,5 @@ macro_rules! run {
   }
 }
 
-pub const NUM_ELEMENTS: usize = 256 * 256 * 4;
+pub const NUM_ELEMENTS: usize = 256 * 256;
+pub const NUM_ELEMENTS_SMALLER: usize = 256 * 4;

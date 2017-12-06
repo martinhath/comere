@@ -8,9 +8,9 @@ lazy_static = "*"
 bench = { path = './bench' }
 crossbeam = "*"
 bencher = "*"
+rand = "*"
 
 [dev-dependencies]
-rand = "*"
 time = "*"
 
 [profile.bench]
