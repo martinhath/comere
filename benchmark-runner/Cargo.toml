@@ -1,0 +1,15 @@
+[package]
+name = "benchmark-runner"
+version = "0.1.0"
+authors = ["Martin Hafskjold Thoresen <martinhath@gmail.com>"]
+
+[dependencies]
+rand = "*"
+clap = "*"
+lazy_static = "*"
+bench = { path = '../bench' }
+comere = { path = '../' }
+crossbeam = "*"
+
+[features]
+hp-wait = ["comere/hp-wait"]

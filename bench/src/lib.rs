@@ -9,9 +9,70 @@
 extern crate time;
 
 use std::sync::{Arc, Barrier};
+use std::str::FromStr;
 
+#[derive(Debug, Clone)]
 pub struct BenchStats {
+    ident: BenchIdentifier,
     samples: Vec<u64>,
+}
+
+impl BenchStats {
+    pub fn variant(&self) -> &str {
+        &self.ident.variant
+    }
+    pub fn name(&self) -> &str {
+        &self.ident.name
+    }
+    pub fn threads(&self) -> usize {
+        self.ident.threads
+    }
+
+    pub fn string(&self) -> String {
+        self.ident.string()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BenchIdentifier {
+    variant: String,
+    name: String,
+    threads: usize,
+}
+
+impl BenchIdentifier {
+    pub fn string(&self) -> String {
+        format!(
+            "{}::{}::{}",
+            self.variant,
+            self.name,
+            self.threads
+        )
+    }
+}
+
+impl FromStr for BenchIdentifier {
+    type Err = ();
+    fn from_str(s: &str) -> Result<BenchIdentifier, Self::Err> {
+        let split = s.split("::").collect::<Vec<_>>();
+        Ok(match split.len() {
+            3 => {
+                BenchIdentifier {
+                    variant: split[0].to_string(),
+                    name: split[1].to_string(),
+                    threads: split[2].parse().map_err(|_| ())?,
+                }
+            }
+            4 => {
+                BenchIdentifier {
+                    variant: split[0].to_string(),
+                    name: format!("{}_{}", split[1], split[2]),
+                    threads: split[3].parse().map_err(|_| ())?,
+                }
+            }
+            _ => return Err(()),
+        })
+    }
 }
 
 impl BenchStats {
@@ -87,6 +148,10 @@ impl BenchStats {
         )
     }
 
+    pub fn samples(&self) -> &[u64] {
+        &self.samples
+    }
+
     // This is borrowed from `test::Bencher` :)
     fn fmt_thousands_sep(mut n: u64) -> String {
         let sep = ',';
@@ -114,15 +179,16 @@ impl BenchStats {
 }
 
 /// Turn the statistics given into a gnuplot data string.
-pub fn gnuplot(stats: &[(BenchStats, String)]) -> String {
+pub fn gnuplot(stats: &[BenchStats]) -> String {
     let mut s = String::new();
-    let lines = stats.iter().map(|b| b.0.samples.len()).max().unwrap_or(0);
-    for &(_, ref name) in stats {
-        s.push_str(&format!("#{} ", name));
+    let lines = stats.iter().map(|b| b.samples.len()).max().unwrap_or(0);
+    for stats in stats {
+        let asd: String = stats.ident.string();
+        s.push_str(&asd);
     }
     s.push('\n');
     for i in 0..lines {
-        for &(ref stat, _) in stats {
+        for stat in stats {
             s.push_str(&format!("{} ", stat.samples.get(i).cloned().unwrap_or(0)));
         }
         s.push('\n');
@@ -196,8 +262,11 @@ impl<S> Bencher<S> {
         self.between = Box::new(f);
     }
 
-    pub fn into_stats(self) -> BenchStats {
-        BenchStats { samples: self.samples }
+    pub fn into_stats(self, name: String) -> BenchStats {
+        BenchStats {
+            samples: self.samples,
+            ident: BenchIdentifier::from_str(&name).unwrap(),
+        }
     }
 }
 
@@ -338,7 +407,7 @@ where
         Self {
             state,
             samples: vec![],
-            n: 250,
+            n: 100,
             threads,
             senders,
             receivers,
@@ -389,10 +458,11 @@ where
         self.after = Box::new(f);
     }
 
-    pub fn into_stats(self) -> BenchStats {
-        // self.samples.sort();
-        // self.samples = self.samples[100..900].iter().cloned().collect();
-        BenchStats { samples: self.samples }
+    pub fn into_stats(self, name: String) -> BenchStats {
+        BenchStats {
+            samples: self.samples,
+            ident: BenchIdentifier::from_str(&name).unwrap(),
+        }
     }
 }
 

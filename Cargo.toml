@@ -10,32 +10,6 @@ crossbeam = "*"
 bencher = "*"
 rand = "*"
 
-[dev-dependencies]
-time = "*"
-
-[profile.bench]
-debug = true
-
-[[bin]]
-name = "benches-hp"
-path = "benches/hp.rs"
-
-[[bin]]
-name = "benches-hp-spin"
-path = "benches/hp.rs"
-
-[[bin]]
-name = "benches-ebr"
-path = "benches/ebr.rs"
-
-[[bin]]
-name = "benches-crossbeam"
-path = "benches/crossbeam.rs"
-
-[[bin]]
-name = "benches-nothing"
-path = "benches/nothing.rs"
-
 [features]
 default = []
 # Should the HP implmementation repeatedly scan and wait for other threads to unregister a HP when
