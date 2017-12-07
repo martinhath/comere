@@ -105,7 +105,7 @@ fn main() {
 
     for stat in stats.iter() {
         let output_filename = format!(
-            "s:{}-b:{}-t:{}",
+            "s:{}-b:{}-t:{:02}",
             stat.variant(),
             stat.name(),
             stat.threads()
