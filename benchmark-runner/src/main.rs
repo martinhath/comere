@@ -64,6 +64,7 @@ fn main() {
         (@arg num_threads: -t +takes_value "Sets the number of threads in the benchmark")
         (@arg output_dir: -d +takes_value "Sets the output directory")
         (@arg name: +takes_value "The name of the benchmarks that is ran")
+        (@arg stdout: --stdout "Print results to stdout")
     ).get_matches();
 
     let num_threads: usize = value_t!(matches, "num_threads", String)
@@ -72,6 +73,7 @@ fn main() {
         .unwrap_or(4);
     let filter_name = value_t!(matches, "name", String).unwrap_or("".to_string());
     let output_dir = value_t!(matches, "output_dir", String).unwrap_or(".".to_string());
+    let stdout = matches.is_present("stdout");
 
     let stats: Vec<bench::BenchStats> = benches
         .iter()
@@ -84,6 +86,22 @@ fn main() {
             filter_name
         );
     }
+    if stdout {
+        for stat in stats.iter() {
+            println!(
+                "# s:{}-b:{}-t:{}",
+                stat.variant(),
+                stat.name(),
+                stat.threads()
+            );
+            for sample in stat.samples() {
+                println!("{}", sample);
+            }
+
+        }
+        return;
+    }
+
 
     for stat in stats.iter() {
         let output_filename = format!(
