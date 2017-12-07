@@ -4,7 +4,7 @@
 
 SCHEMES="nothing hp hp-spin ebr cb"
 THREADS="1 2 4"
-DATE=`date +"%Y-%M-%d-%H:%M:%S"`
+DATE=`date +"%Y-%m-%d-%H:%M:%S"`
 
 OUTPUT="output"
 if [[ ! -d "$OUTPUT" ]] ; then mkdir "$OUTPUT" ; fi
@@ -16,7 +16,7 @@ for t in $(echo "$THREADS"); do
 done
 
 for t in $(echo "$THREADS"); do
-  cargo run --release --features hp-wait -- -t "$t" -d "$OUTPUT"
+  cargo run --release --features hp-wait -- -t "$t" -d "$OUTPUT" hp
 done
 
 # Since the date contains : we must tell tar to not interpret it as a port (or something).
