@@ -36,7 +36,7 @@ pub mod hp {
         let mut b = bench::ThreadBencher::<State, hp::JoinHandle<()>>::new(state, num_threads);
         b.before(|state| while let Some(_) = state.queue.pop() {});
         b.thread_bench(queue_push);
-        b.into_stats(format!("{}:::queue::push::{}", NAME, num_threads))
+        b.into_stats(format!("{}::queue::push::{}", NAME, num_threads))
     }
 
     pub fn queue_pop(num_threads: usize) -> bench::BenchStats {

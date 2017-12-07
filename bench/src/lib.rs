@@ -45,7 +45,7 @@ pub struct BenchIdentifier {
 impl BenchIdentifier {
     pub fn string(&self) -> String {
         format!(
-            "{}::{}::{}",
+            "{}::{}::{:02}",
             self.variant,
             self.name,
             self.threads

@@ -6,7 +6,7 @@ SCHEMES="nothing hp hp-spin ebr cb"
 THREADS="1 2 4"
 DATE=`date +"%Y-%m-%d-%H:%M:%S"`
 
-OUTPUT="output"
+OUTPUT="output-$DATE"
 if [[ ! -d "$OUTPUT" ]] ; then mkdir "$OUTPUT" ; fi
 
 export RUSTFLAGS="-C target-cpu=native -C opt-level=3"
