@@ -11,5 +11,8 @@ bench = { path = '../bench' }
 comere = { path = '../' }
 crossbeam = "*"
 
+[profile.release]
+debug = true
+
 [features]
 hp-wait = ["comere/hp-wait"]

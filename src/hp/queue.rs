@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 /// A Michael-Scott Queue.
 
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire, SeqCst};
+use std::sync::atomic::Ordering::{SeqCst};
 use std::default::Default;
 use std::mem::{ManuallyDrop, drop};
 
@@ -47,8 +47,8 @@ where
             head: Atomic::null(),
             tail: Atomic::null(),
         };
-        q.head.store(ptr, Relaxed);
-        q.tail.store(ptr, Relaxed);
+        q.head.store(ptr, SeqCst);
+        q.tail.store(ptr, SeqCst);
         q
     }
 
@@ -65,22 +65,22 @@ where
                 }
             }
             let t = unsafe { tail.deref() };
-            let next = t.next.load(Acquire);
+            let next = t.next.load(SeqCst);
             assert!(next != tail);
             if unsafe { next.as_ref().is_some() } {
                 // tail wasnt't tail after all.
                 // We try to help out by moving the tail pointer
                 // on queue to the real tail we've seen, which is `next`.
-                let _ = self.tail.compare_and_set(tail, next, Release);
+                let _ = self.tail.compare_and_set(tail, next, SeqCst);
             } else {
                 let succ = t.next
-                    .compare_and_set(Ptr::null(), new_node, Release)
+                    .compare_and_set(Ptr::null(), new_node, SeqCst)
                     .is_ok();
                 if succ {
                     // the CAS succeded, and the new node is linked into the list.
                     // Update `queue.tail`. If we fail here it's OK, since another
                     // thread could have helped by moving the tail pointer.
-                    let _ = self.tail.compare_and_set(tail, new_node, Release);
+                    let _ = self.tail.compare_and_set(tail, new_node, SeqCst);
                     drop(tail_hp);
                     return;
                 }
@@ -97,11 +97,11 @@ where
         F: FnOnce(super::atomic::HazardPtr<Node<T>>),
     {
         'outer: loop {
-            let head: Ptr<Node<T>> = self.head.load(Acquire);
+            let head: Ptr<Node<T>> = self.head.load(SeqCst);
             let head_hp = head.hazard();
             // validate:
             {
-                let new_head: Ptr<Node<T>> = self.head.load(Acquire);
+                let new_head: Ptr<Node<T>> = self.head.load(SeqCst);
                 // If head changed after registering, restart.
                 if head != new_head {
                     drop(head_hp);
@@ -109,13 +109,13 @@ where
                 }
             }
             let h: &Node<T> = unsafe { head.deref() };
-            let next: Ptr<Node<T>> = h.next.load(Acquire);
+            let next: Ptr<Node<T>> = h.next.load(SeqCst);
             if next.is_null() {
                 return None;
             }
             let next_hp = next.hazard();
             {
-                if h.next.load(Acquire) != next {
+                if h.next.load(SeqCst) != next {
                     drop(head_hp);
                     drop(next_hp);
                     return self.pop();
@@ -138,8 +138,6 @@ where
                             f(head_hp);
                             return ret;
                         }
-                        // TODO: we would rather want to loop here, instead of
-                        // giving up if there is contention?
                         Err(_) => continue 'outer,
                     }
                 },
@@ -154,8 +152,8 @@ where
     /// purposes.
     pub fn len(&self) -> usize {
         let mut len = 0;
-        let mut node = unsafe { self.head.load(Acquire).deref() };
-        while let Some(next) = unsafe { node.next.load(Relaxed).as_ref() } {
+        let mut node = unsafe { self.head.load(SeqCst).deref() };
+        while let Some(next) = unsafe { node.next.load(SeqCst).as_ref() } {
             node = next;
             len += 1;
         }
@@ -164,9 +162,9 @@ where
 
     /// Returns `true` if the queue is empty.
     pub fn is_empty(&self) -> bool {
-        let head = self.head.load(Acquire);
+        let head = self.head.load(SeqCst);
         let h = unsafe { head.deref() };
-        h.next.load(Acquire).is_null()
+        h.next.load(SeqCst).is_null()
     }
 }
 

@@ -8,8 +8,10 @@
 
 extern crate time;
 
-use std::sync::{Arc, Barrier};
 use std::str::FromStr;
+use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 const DEFAULT_NUM_SAMPLES: usize = 200;
 
@@ -44,12 +46,7 @@ pub struct BenchIdentifier {
 
 impl BenchIdentifier {
     pub fn string(&self) -> String {
-        format!(
-            "{}::{}::{:02}",
-            self.variant,
-            self.name,
-            self.threads
-        )
+        format!("{}::{}::{:02}", self.variant, self.name, self.threads)
     }
 }
 
@@ -273,11 +270,10 @@ impl<S> Bencher<S> {
 }
 
 pub trait Spawner {
-    type Handle;
     type Return;
     type Result;
 
-    fn spawn<F>(f: F) -> Self::Handle
+    fn spawn<F>(f: F) -> Self
     where
         F: FnOnce() -> Self::Return,
         F: Send + 'static,
@@ -286,8 +282,9 @@ pub trait Spawner {
     fn join(self) -> Self::Result;
 }
 
-use std::sync::mpsc::{Sender, Receiver, channel};
-use std::thread;
+pub struct StdThread<T> {
+    handle: std::thread::JoinHandle<T>,
+}
 
 #[derive(Debug)]
 struct FunctionPtr<State> {
@@ -332,25 +329,24 @@ enum ThreadSignal<S> {
     End,
 }
 
-impl<T> Spawner for thread::JoinHandle<T>
+impl<T> Spawner for StdThread<T>
 where
     T: Send,
 {
-    type Handle = thread::JoinHandle<T>;
     type Return = T;
     type Result = thread::Result<T>;
 
-    fn spawn<F>(f: F) -> Self::Handle
+    fn spawn<F>(f: F) -> Self
     where
         F: FnOnce() -> Self::Return,
         F: Send + 'static,
         Self::Return: Send + 'static,
     {
-        thread::spawn(f)
+        StdThread { handle: thread::spawn(f) }
     }
 
     fn join(self) -> Self::Result {
-        self.join()
+        self.handle.join()
     }
 }
 
@@ -358,7 +354,7 @@ pub struct ThreadBencher<S, Sp: Spawner> {
     samples: Vec<u64>,
     state: S,
     n: usize,
-    threads: Vec<Sp::Handle>,
+    threads: Vec<Sp>,
     senders: Vec<Sender<ThreadSignal<S>>>,
     receivers: Vec<Receiver<ThreadSignal<S>>>,
     before: Box<Fn(&mut S)>,
@@ -378,7 +374,7 @@ where
         let barrier = Arc::new(Barrier::new(n_threads + 1));
         // Start the threads, and give them channels for communication.
         let threads = (0..n_threads)
-            .map(|_| {
+            .map(|_thread_id| {
                 let (our_send, their_recv) = channel();
                 let (their_send, our_recv) = channel();
                 senders.push(our_send);
@@ -387,21 +383,35 @@ where
                 Sp::spawn(move || {
                     let recv = their_recv;
                     let send = their_send;
+                    let mut count = 0;
                     loop {
+                        // println!("thread {} recving signal #{}", _thread_id, count);
                         let signal = match recv.recv() {
                             Ok(ThreadSignal::Run(ref mut f)) => {
+                                // println!("thread {} waiting for barrier", _thread_id);
                                 barrier.wait();
                                 let t0 = time::precise_time_ns();
+                                // println!("thread {} calling", _thread_id);
                                 f.call();
                                 let t1 = time::precise_time_ns();
                                 ThreadSignal::Done(t1 - t0)
                             }
-                            Ok(ThreadSignal::End) => break,
+                            Ok(ThreadSignal::End) => {
+                                // println!("thread {} Got END", _thread_id);
+                                break;
+                            }
                             Ok(_) => unreachable!(),
                             Err(e) => panic!("{:?}", e),
                         };
+                        // println!(
+                        //     "thread {} got signal, done matching. Sending #{}",
+                        //     _thread_id,
+                        //     count
+                        // );
                         assert!(send.send(signal).is_ok());
+                        count += 1;
                     }
+                    // println!("thread is dying: {}", _thread_id);
                     Default::default()
                 })
             })
@@ -423,19 +433,24 @@ where
     /// shared between all threads.
     pub fn thread_bench(&mut self, f: fn(&St)) {
         let func_ptr = FunctionPtr::new(f, &self.state);
-        for sender in &self.senders {
-            assert!(sender.send(ThreadSignal::Run(func_ptr.clone())).is_ok());
-        }
-
         for _i in 0..self.n {
+            // println!("[bench/src/lib.rs]: iteration {}", _i);
             (self.before)(&mut self.state);
+            // print!("b");
+            flush();
+            // println!("#### Sending {}", _i);
             for sender in &self.senders {
+                // print!("s");
+                flush();
                 assert!(sender.send(ThreadSignal::Run(func_ptr.clone())).is_ok());
             }
             // TODO: this is not good: we risk waiting for a long time in `barrier.wait`
             let t0 = time::precise_time_ns();
             self.barrier.wait();
+            // println!("#### Receiving {}", _i);
             for recv in self.receivers.iter() {
+                // print!("r");
+                flush();
                 match recv.recv() {
                     Ok(ThreadSignal::Done(_t)) => {
                         // OK
@@ -443,12 +458,15 @@ where
                     _ => panic!("Thread didn't return correctly"),
                 }
             }
+            // println!();
             let t1 = time::precise_time_ns();
             self.samples.push(t1 - t0);
         }
+        // println!("main sending END");
         for sender in &self.senders {
             assert!(sender.send(ThreadSignal::End).is_ok());
         }
+        // println!("ends are sent");
         (self.after)(&mut self.state);
     }
 
@@ -461,11 +479,18 @@ where
     }
 
     pub fn into_stats(self, name: String) -> BenchStats {
+        self.threads.into_iter().map(Spawner::join).count();
+        // println!("ThreadBencher is dropped soon");
         BenchStats {
             samples: self.samples,
             ident: BenchIdentifier::from_str(&name).unwrap(),
         }
     }
+}
+
+fn flush() {
+    use std::io::Write;
+    let _ = ::std::io::stdout().flush();
 }
 
 mod test {

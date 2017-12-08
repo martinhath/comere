@@ -119,12 +119,11 @@ impl<T: PartialEq> List<T> {
             loop {
                 let next_ptr = current.next.load(SeqCst).with_tag(0);
                 if current.data == *value {
-                    // Now we want to remove the current node from the list.
-                    // We first need to mark this node as 'to-be-deleted',
-                    // by tagging its next pointer. When doing this, we avoid
-                    // that other threads are inserting something after the
-                    // current node, and us swinging the `next` pointer of
-                    // `previous` to the old `next` of the current node.
+                    // Now we want to remove the current node from the list. We first need to mark
+                    // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
+                    // we avoid that other threads are inserting something after the current node,
+                    // and us swinging the `next` pointer of `previous` to the old `next` of the
+                    // current node.
                     let next_ptr = current.next.load(SeqCst);
                     if current
                         .next
@@ -138,16 +137,16 @@ impl<T: PartialEq> List<T> {
                     match res {
                         Ok(_) => return true,
                         Err(_) => {
-                            // Some new node in inserted behind us.
-                            // Unmark and restart.
-                            let res = current.next.compare_and_set(
+                            // Some new node in inserted behind us. Unmark and restart.
+                            let _res = current.next.compare_and_set(
                                 next_ptr.with_tag(1),
                                 next_ptr,
                                 SeqCst,
                             );
-                            if res.is_err() {
-                                panic!("coulnd't untag ptr. WTF?");
-                            }
+                            // Don't care about the return of this CAS. We have to restart anyways.
+                            // if res.is_err() {
+                            //     panic!("coulnd't untag ptr. WTF?");
+                            // }
                             continue 'outer;
                         }
                     }

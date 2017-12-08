@@ -12,6 +12,8 @@ use std::mem::drop;
 
 use self::atomic::{Owned, HazardPtr};
 
+use bench::Spawner;
+
 ///
 /// The number of hazard pointers for each thread.
 const NUM_HP: usize = 5;
@@ -47,33 +49,34 @@ impl PartialEq for ThreadEntry {
     }
 }
 
+use std::cell::UnsafeCell;
+
 #[derive(Debug)]
 struct ThreadLocal {
-    thread_marker: *const ThreadEntry,
+    thread_marker: UnsafeCell<*mut ThreadEntry>,
     id: usize,
 }
 
 impl ThreadLocal {
     /// Returns a reference to the threads marker. Make the marker if it is not present.
-    fn marker(&mut self) -> &'static mut ThreadEntry {
-        let mut marker_ptr = self.thread_marker;
-        if marker_ptr.is_null() {
+    unsafe fn marker(&self) -> &'static mut ThreadEntry {
+        let marker_ptr = self.thread_marker.get();
+        if (*marker_ptr).is_null() {
             let te = ThreadEntry::new(self.id);
-            marker_ptr = ENTRIES.insert(te).as_raw();
-            self.thread_marker = marker_ptr;
+            use self::list::Node;
+            let owned = Owned::new(Node::new(te));
+            *marker_ptr = (*owned).data_ptr().as_raw() as *mut _;
+            ENTRIES.insert_owned(owned);
         }
-        unsafe {
-            // TODO: transmute from *const to *mut !!! Bad idea!
-            let ptr = ::std::mem::transmute::<*const ThreadEntry, *mut ThreadEntry>(marker_ptr);
-            // This is safe, since we've just made sure it isn't null.
-            &mut *ptr
-        }
+        &mut **marker_ptr
     }
 }
 
 pub fn marker() -> &'static mut ThreadEntry {
-    let marker = THREAD_LOCAL.with(|tl| tl.borrow_mut().marker());
-    marker
+    unsafe {
+        let marker = THREAD_LOCAL.with(|tl| tl.borrow().marker());
+        marker
+    }
 }
 
 fn remove_thread_local() {
@@ -114,19 +117,18 @@ where
     }
 }
 
-use bench::Spawner;
-
 impl<T> Spawner for JoinHandle<T> {
-    type Handle = JoinHandle<T>;
     type Return = T;
     type Result = ::std::thread::Result<T>;
 
-    fn spawn<F>(f: F) -> Self::Handle where
+    fn spawn<F>(f: F) -> Self
+    where
         F: FnOnce() -> Self::Return,
         F: Send + 'static,
-        Self::Return: Send + 'static {
-            spawn(f)
-        }
+        Self::Return: Send + 'static,
+    {
+        spawn(f)
+    }
 
     fn join(self) -> Self::Result {
         self.join()
@@ -137,7 +139,7 @@ use std::cell::RefCell;
 thread_local! {
     static THREAD_LOCAL: RefCell<ThreadLocal> = {
         let tl = ThreadLocal {
-            thread_marker: ::std::ptr::null(),
+            thread_marker: UnsafeCell::new(::std::ptr::null_mut()),
             id: get_next_thread_id(),
         };
         RefCell::new(tl)
@@ -211,6 +213,7 @@ fn free_from_queue() {
         {
             if HazardPtr::<()>::scan_addr(garbage.address()) {
                 // used
+                panic!("Since we spun inside, we should never get here?");
                 HAZARD_QUEUE.push(garbage);
             } else {
                 drop(garbage);

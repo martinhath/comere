@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 use super::atomic::{Owned, Atomic, Ptr};
 use std::mem::ManuallyDrop;
 use super::{Pin, pin};
@@ -33,10 +33,10 @@ impl<T> List<T> {
     pub fn insert<'scope>(&self, data: T, _pin: Pin<'scope>) -> Ptr<'scope, Node<T>> {
         let curr_ptr: Ptr<Node<T>> = Owned::new(Node::new(data)).into_ptr(_pin);
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
-        let mut head = self.head.load(Relaxed, _pin);
+        let mut head = self.head.load(SeqCst, _pin);
         loop {
-            curr.next.store(head, Relaxed);
-            let res = self.head.compare_and_set(head, curr_ptr, Release, _pin);
+            curr.next.store(head, SeqCst);
+            let res = self.head.compare_and_set(head, curr_ptr, SeqCst, _pin);
             match res {
                 Ok(_) => {
                     return curr_ptr;
@@ -49,7 +49,7 @@ impl<T> List<T> {
     }
 
     pub fn is_empty<'scope>(&self, _pin: Pin<'scope>) -> bool {
-        let head = self.head.load(Relaxed, _pin);
+        let head = self.head.load(SeqCst, _pin);
         let ret = head.is_null();
         if !ret {
             let mut node = unsafe { head.deref() };
@@ -64,14 +64,14 @@ impl<T> List<T> {
 
     /// Removes and returns the first element of the list, if any.
     pub fn remove_front<'scope>(&self, pin: Pin<'scope>) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed, pin);
+        let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst, pin);
         loop {
             if head_ptr.is_null() {
                 return None;
             }
             let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed, pin).with_tag(0);
-            match self.head.compare_and_set(head_ptr, next, Release, pin) {
+            let next = head.next.load(SeqCst, pin).with_tag(0);
+            match self.head.compare_and_set(head_ptr, next, SeqCst, pin) {
                 Ok(()) => {
                     let data = unsafe {::std::ptr::read(&head.data)};
                     // add garbage here!!
@@ -85,6 +85,7 @@ impl<T> List<T> {
         }
     }
 
+    // TODO: we don't need this anymore, since we've got `iter`.
     /// Return `true` if `f` evaluates to `true` for all the elements
     /// in the list
     pub fn all<'scope, F>(&self, f: F, _pin: Pin<'scope>) -> bool
@@ -92,14 +93,14 @@ impl<T> List<T> {
         F: Fn(&T) -> bool,
     {
         let previous_atomic: &Atomic<Node<T>> = &self.head;
-        let mut node_ptr = self.head.load(Relaxed, _pin);
+        let mut node_ptr = self.head.load(SeqCst, _pin);
         let mut node;
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
             if !f(&node.data) {
                 return false;
             }
-            node_ptr = node.next.load(Relaxed, _pin);
+            node_ptr = node.next.load(SeqCst, _pin);
         }
         true
     }
@@ -140,9 +141,9 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     /// Note that this method causes the list to not be lock-free, since
     /// threads wanting to insert a node after this or remove the next node
     /// will be stuck forever if a thread tags the current node and then dies.
-    pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> Option<Owned<Node<T>>> {
-        // Rust does not have tail-call optimization guarantees,
-        // so we have to use a loop here, in order not to blow the stack.
+    pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> Option<T> {
+        // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
+        // order not to blow the stack.
         'outer: loop {
             let mut previous_node_ptr = &self.head;
             let mut current_ptr = self.head.load(SeqCst, _pin);
@@ -154,12 +155,11 @@ impl<T: ::std::cmp::PartialEq> List<T> {
             loop {
                 let next_ptr = current.next.load(SeqCst, _pin).with_tag(0);
                 if *current.data == *value {
-                    // Now we want to remove the current node from the list.
-                    // We first need to mark this node as 'to-be-deleted',
-                    // by tagging its next pointer. When doing this, we avoid
-                    // that other threads are inserting something after the
-                    // current node, and us swinging the `next` pointer of
-                    // `previous` to the old `next` of the current node.
+                    // Now we want to remove the current node from the list.  We first need to mark
+                    // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
+                    // we avoid that other threads are inserting something after the current node,
+                    // and us swinging the `next` pointer of `previous` to the old `next` of the
+                    // current node.
                     let next_ptr = current.next.load(SeqCst, _pin);
                     if current
                         .next
@@ -172,13 +172,14 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                     let res =
                         previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst, _pin);
                     match res {
-                        Ok(_) => {
-                            return Some(unsafe { current_ptr.into_owned() });
+                        Ok(_) => unsafe {
+                            let data = ::std::ptr::read(&current.data);
+                            _pin.add_garbage(current_ptr.into_owned());
+                            return Some(ManuallyDrop::into_inner(data));
                         }
                         Err(_) => {
                             let pnp = previous_node_ptr.load(SeqCst, _pin);
-                            // Some new node in inserted behind us.
-                            // Unmark and restart.
+                            // Some new node in inserted behind us. Unmark and restart.
                             let res = current.next.compare_and_set(
                                 next_ptr.with_tag(1),
                                 next_ptr,
@@ -205,7 +206,9 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     }
 
     pub fn remove_with<'scope, F>(&self, value: &T, _pin: Pin<'scope>, f: F) -> bool
-    where F: FnOnce(Owned<Node<T>>) {
+    where
+        F: FnOnce(Owned<Node<T>>),
+    {
         // Rust does not have tail-call optimization guarantees,
         // so we have to use a loop here, in order not to blow the stack.
         'outer: loop {
@@ -274,14 +277,28 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     /// Return `true` if the list contains the given value.
     pub fn contains<'scope>(&self, value: &T, _pin: Pin<'scope>) -> bool {
         let previous_atomic: &Atomic<Node<T>> = &self.head;
-        let mut node_ptr = self.head.load(Relaxed, _pin);
+        let mut node_ptr = self.head.load(SeqCst, _pin);
         let mut node;
+
+        use ::std::collections::HashSet;
+        let mut visited = HashSet::new();
+        let mut ptrs = Vec::new();
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
             if *node.data == *value {
                 return true;
             }
-            node_ptr = node.next.load(Relaxed, _pin);
+            node_ptr = node.next.load(SeqCst, _pin);
+            let u = node_ptr.as_raw() as usize;
+            if visited.contains(&u) {
+                eprintln!("  {:x} has been seen before!", u);
+                for (i, p) in ptrs.iter().rev().take_while(|&&p| p != u).enumerate() {
+                    eprintln!("  {:3} {:x}", i, p);
+                }
+                panic!("loop!");
+            }
+            visited.insert(u);
+            ptrs.push(u);
         }
         false
     }

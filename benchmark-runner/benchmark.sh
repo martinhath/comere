@@ -20,4 +20,4 @@ for t in $(echo "$THREADS"); do
 done
 
 # Since the date contains : we must tell tar to not interpret it as a port (or something).
-tar -zc --force-local -f "$DATE".tar.gz "$OUTPUT"
+tar -zc --force-local -f "$DATE".tar.gz "$OUTPUT"/*

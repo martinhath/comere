@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 use std::mem::{drop, ManuallyDrop};
 
 use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
@@ -13,14 +13,14 @@ pub struct List<T> {
 }
 
 impl<T> Node<T> {
-    fn new(data: T) -> Self {
+    pub(crate) fn new(data: T) -> Self {
         Self {
             data: ManuallyDrop::new(data),
             next: Atomic::null(),
         }
     }
 
-    fn data_ptr(&self) -> Ptr<T> {
+    pub(crate) fn data_ptr(&self) -> Ptr<T> {
         let t: &T = &*self.data;
         Ptr::from_raw(t as *const T)
     }
@@ -34,32 +34,49 @@ where
         Self { head: Atomic::null() }
     }
 
-    /// Insert into the head of the list
-    pub fn insert(&self, data: T) -> Ptr<T> {
-        let node = Node::new(data);
-        let curr_ptr: Ptr<Node<T>> = Owned::new(node).into_ptr();
-        let data_ptr: Ptr<T> = {
-            let node: &Node<T> = unsafe { curr_ptr.deref() };
-            Ptr::from_raw(node.data_ptr().as_raw())
-        };
+    /// Insert into the head of the list, and return a pointer to the data.
+    pub fn insert(&self, data: T) {
+        let curr_ptr: Owned<Node<T>> = Owned::new(Node::new(data));
+        self.insert_owned(curr_ptr)
+    }
+
+    /// Insert the Node given as the first element in the list. This is useful when we need a
+    /// pointer to the data _before_ actually pushing it into the list (eg.
+    /// in `ThreadLocal::marker`).
+    pub(crate) fn insert_owned(&self, curr_ptr: Owned<Node<T>>) {
+        let curr_ptr = curr_ptr.into_ptr();
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
-        let mut head = self.head.load(Relaxed);
-        loop {
-            curr.next.store(head, Relaxed);
-            let res = self.head.compare_and_set(head, curr_ptr, Release);
+        'outer: loop {
+            // We do not need to register `curr_ptr` as a HP, since it is not visible to other threads.
+            let mut head = self.head.load(SeqCst);
+            let head_hp = head.hazard();
+            {
+                if self.head.load(SeqCst) != head {
+                    drop(head_hp);
+                    continue 'outer;
+                }
+            }
+            curr.next.store(head, SeqCst);
+            let res = self.head.compare_and_set(head, curr_ptr, SeqCst);
             match res {
                 Ok(_) => {
-                    return data_ptr;
+                    let data_ptr: Ptr<T> = {
+                        let node: &Node<T> = unsafe { curr_ptr.deref() };
+                        Ptr::from_raw(node.data_ptr().as_raw())
+                    };
+                    drop(head_hp);
+                    return;
                 }
                 Err(new_head) => {
                     head = new_head;
+                    drop(head_hp);
                 }
             }
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        let head = self.head.load(Relaxed);
+        let head = self.head.load(SeqCst);
         let ret = head.is_null();
         if !ret {
             let mut node = unsafe { head.deref() };
@@ -87,19 +104,17 @@ where
                 }
             }
             let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed);
+            let next = head.next.load(SeqCst);
             match self.head.compare_and_set(head_ptr, next, SeqCst) {
-                Ok(()) => {
+                Ok(()) => unsafe {
                     head_hp.wait();
                     // Now the head is made unreachable from the queue, and no thread has marked
                     // the pointer in the hazard list. Then we have exclusive access to it. Read
                     // the data, and free the node.
-                    let data = unsafe {::std::ptr::read(&head.data)};
-                    unsafe {
-                        // Since we have made the node unreachable, and no thread has registered
-                        // it as hazardous, it is safe to free.
-                        head_hp.free();
-                    }
+                    let data = ::std::ptr::read(&head.data);
+                    // Since we have made the node unreachable, and no thread has registered
+                    // it as hazardous, it is safe to free.
+                    head_hp.free();
                     return Some(ManuallyDrop::into_inner(data));
                 }
                 Err(new_head) => {
@@ -130,40 +145,40 @@ where
     ///
     /// NOTE(6.11.17): Maybe we can fix this by having other operation help out deleting the note
     /// if they ever see one?
-    ///
-    /// TODO(6.11.17): Return the value! We need to do this, since it may have to be dropped. Now
-    /// we just leak the value!
-    pub fn remove(&self, value: &T) -> Option<Owned<Node<T>>> {
+    pub fn remove(&self, value: &T) -> Option<T> {
+        fn validate<T>(hp: HazardPtr<T>) -> bool {
+            true
+        }
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
         'outer: loop {
-            let mut previous_node_ptr = &self.head;
-            let mut current_ptr = previous_node_ptr.load(SeqCst);
+            let mut current_atomic_ptr = &self.head;
+            let mut current_ptr = current_atomic_ptr.load(SeqCst);
             if current_ptr.is_null() {
                 return None;
             }
-            let mut current: &Node<T>;
-            let mut prev_handle: Option<HazardPtr<::hp::list::Node<T>>> = None;
+            let mut current_node: &Node<T>;
+            let mut prev_hp: Option<HazardPtr<::hp::list::Node<T>>> = None;
 
             loop {
-                let curr_hp = current_ptr.hazard();
+                let current_hp = current_ptr.hazard();
                 // validate
                 {
-                    if previous_node_ptr.load(SeqCst) != current_ptr {
-                        drop(curr_hp); // explicit drop here. Do we need it?
+                    if current_atomic_ptr.load(SeqCst) != current_ptr {
+                        drop(current_hp); // explicit drop here. Do we need it?
                         continue 'outer;
                     }
                 }
-                current = unsafe { current_ptr.deref() };
+                current_node = unsafe { current_ptr.deref() };
 
-                if *current.data == *value {
+                if *current_node.data == *value {
                     // Now we want to remove the current node from the list.  We first need to mark
                     // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
                     // we avoid that other threads are inserting something after the current node,
                     // and us swinging the `next` pointer of `previous` to the old `next` of the
                     // current node.
-                    let next_ptr = current.next.load(SeqCst);
-                    if current
+                    let next_ptr = current_node.next.load(SeqCst);
+                    if current_node
                         .next
                         .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst)
                         .is_err()
@@ -171,17 +186,18 @@ where
                         // Failed to mark the current node. Restart.
                         continue 'outer;
                     };
-                    let res = previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
+                    let res = current_atomic_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
                     match res {
-                        Ok(_) => {
-                            // Now `current` is not reachable from the list.
-                            curr_hp.wait();
-                            return Some(unsafe { current_ptr.into_owned() });
+                        Ok(_) => unsafe {
+                            // Now `current_node` is not reachable from the list.
+                            let data = ::std::ptr::read(&current_node.data);
+                            current_hp.free();
+                            return Some(ManuallyDrop::into_inner(data));
                         }
                         Err(_) => {
                             // Some new node in inserted behind us.
                             // Unmark and restart.
-                            let res = current.next.compare_and_set(
+                            let res = current_node.next.compare_and_set(
                                 next_ptr.with_tag(1),
                                 next_ptr,
                                 SeqCst,
@@ -195,10 +211,10 @@ where
                         }
                     }
                 } else {
-                    previous_node_ptr = &current.next;
-                    current_ptr = current.next.load(SeqCst).with_tag(0);
-                    prev_handle.take().map(::std::mem::drop);
-                    prev_handle = Some(curr_hp);
+                    current_atomic_ptr = &current_node.next;
+                    current_ptr = current_node.next.load(SeqCst).with_tag(0);
+                    prev_hp.take().map(::std::mem::drop);
+                    prev_hp = Some(current_hp);
 
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
@@ -211,14 +227,14 @@ where
 
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
-        let mut node_ptr = self.head.load(Relaxed);
+        let mut node_ptr = self.head.load(SeqCst);
         let mut node;
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
             if *node.data == *value {
                 return true;
             }
-            node_ptr = node.next.load(Relaxed);
+            node_ptr = node.next.load(SeqCst);
         }
         false
     }
@@ -314,11 +330,9 @@ mod test {
         let threads = (0..N_THREADS)
             .map(|thread_id| {
                 let list = list.clone();
-                spawn(move || {
-                    for i in (0..N / N_THREADS).rev() {
-                        let n = i * N_THREADS + thread_id;
-                        assert!(list.remove(&n).is_some());
-                    }
+                spawn(move || for i in (0..N / N_THREADS).rev() {
+                    let n = i * N_THREADS + thread_id;
+                    assert!(list.remove(&n).is_some());
                 })
             })
             .collect::<Vec<_>>();

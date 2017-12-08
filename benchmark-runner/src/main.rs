@@ -38,29 +38,33 @@ macro_rules! S {
 
 fn main() {
     let benches = S!(
-        nothing::nop,
-        nothing::queue_push,
-        nothing::queue_pop,
-        nothing::queue_transfer,
         cb::nop,
-        cb::queue_push,
         cb::queue_pop,
+        cb::queue_push,
         cb::queue_transfer,
-        ebr::nop,
         ebr::list_remove,
-        ebr::queue_push,
+        ebr::list_real,
+        ebr::nop,
         ebr::queue_pop,
+        ebr::queue_push,
         ebr::queue_transfer,
-        hp::nop,
         hp::list_remove,
-        hp::queue_push,
+        hp::list_real,
+        hp::nop,
         hp::queue_pop,
-        hp::queue_transfer
+        hp::queue_push,
+        hp::queue_transfer,
+        nothing::list_remove,
+        nothing::list_real,
+        nothing::nop,
+        nothing::queue_pop,
+        nothing::queue_push,
+        nothing::queue_transfer
     );
 
     let matches = clap_app!(benchmark_runner =>
         (version: "1.0")
-        (author: "Martin Hafskjold Thoresen <martinhath@gmail.com")
+        (author: "Martin Hafskjold Thoresen <martinhath@gmail.com>")
         (@arg num_threads: -t +takes_value "Sets the number of threads in the benchmark")
         (@arg output_dir: -d +takes_value "Sets the output directory")
         (@arg name: +takes_value "The name of the benchmarks that is ran")
@@ -78,7 +82,10 @@ fn main() {
     let stats: Vec<bench::BenchStats> = benches
         .iter()
         .filter(|&&(_, ref name)| name.contains(&filter_name))
-        .map(|&(ref f, _)| f.call(num_threads))
+        .map(|&(ref f, ref name)| {
+            println!("calling {}", name);
+            f.call(num_threads)
+        })
         .collect();
     if stats.len() == 0 {
         panic!(

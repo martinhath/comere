@@ -3,10 +3,10 @@
 #![feature(const_fn, const_atomic_usize_new)]
 #![feature(alloc_system, global_allocator, allocator_api)]
 
-// extern crate alloc_system;
-// use alloc_system::System;
-// #[global_allocator]
-// static A: System = System;
+extern crate alloc_system;
+use alloc_system::System;
+#[global_allocator]
+static A: System = System;
 
 extern crate bench;
 
