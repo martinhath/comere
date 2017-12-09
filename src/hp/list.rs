@@ -126,9 +126,20 @@ where
 
     /// Return an iterator to the list.
     pub fn iter(&self) -> Iter<T> {
-        Iter {
-            node: self.head.load(SeqCst),
-            _marker: ::std::marker::PhantomData,
+        'outer: loop {
+            let head = self.head.load(SeqCst);
+            let head_hp = head.hazard();
+            {
+                if self.head.load(SeqCst) != head {
+                    continue 'outer;
+                }
+            }
+            return Iter {
+                node: head,
+                hp: head_hp,
+                _marker: ::std::marker::PhantomData,
+
+            }
         }
     }
 }
@@ -146,9 +157,6 @@ where
     /// NOTE(6.11.17): Maybe we can fix this by having other operation help out deleting the note
     /// if they ever see one?
     pub fn remove(&self, value: &T) -> Option<T> {
-        fn validate<T>(hp: HazardPtr<T>) -> bool {
-            true
-        }
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
         'outer: loop {
@@ -164,9 +172,16 @@ where
                 let current_hp = current_ptr.hazard();
                 // validate
                 {
-                    if current_atomic_ptr.load(SeqCst) != current_ptr {
-                        drop(current_hp); // explicit drop here. Do we need it?
-                        continue 'outer;
+                    if let Some(ref handle) = prev_hp {
+                        if handle.next.load(SeqCst) != current_ptr {
+                            drop(current_hp); // explicit drop here. Do we need it?
+                            continue 'outer;
+                        }
+                    } else {
+                        if current_atomic_ptr.load(SeqCst) != current_ptr {
+                            drop(current_hp); // explicit drop here. Do we need it?
+                            continue 'outer;
+                        }
                     }
                 }
                 current_node = unsafe { current_ptr.deref() };
@@ -224,37 +239,146 @@ where
             }
         }
     }
+    
+    pub fn remove_with_node(&self, value: &T) -> Option<Owned<Node<T>>> {
+        // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
+        // order not to blow the stack.
+        'outer: loop {
+            let mut current_atomic_ptr = &self.head;
+            let mut current_ptr = current_atomic_ptr.load(SeqCst);
+            if current_ptr.is_null() {
+                return None;
+            }
+            let mut current_node: &Node<T>;
+            let mut prev_hp: Option<HazardPtr<::hp::list::Node<T>>> = None;
+
+            loop {
+                let current_hp = current_ptr.hazard();
+                // validate
+                {
+                    if let Some(ref handle) = prev_hp {
+                        if handle.next.load(SeqCst) != current_ptr {
+                            drop(current_hp); // explicit drop here. Do we need it?
+                            continue 'outer;
+                        }
+                    } else {
+                        if current_atomic_ptr.load(SeqCst) != current_ptr {
+                            drop(current_hp); // explicit drop here. Do we need it?
+                            continue 'outer;
+                        }
+                    }
+                }
+                current_node = unsafe { current_ptr.deref() };
+
+                if *current_node.data == *value {
+                    // Now we want to remove the current node from the list.  We first need to mark
+                    // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
+                    // we avoid that other threads are inserting something after the current node,
+                    // and us swinging the `next` pointer of `previous` to the old `next` of the
+                    // current node.
+                    let next_ptr = current_node.next.load(SeqCst);
+                    if current_node
+                        .next
+                        .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst)
+                        .is_err()
+                    {
+                        // Failed to mark the current node. Restart.
+                        continue 'outer;
+                    };
+                    let res = current_atomic_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
+                    match res {
+                        Ok(_) => unsafe {
+                            // Now `current_node` is not reachable from the list.
+                            return Some(current_ptr.into_owned());
+                        }
+                        Err(_) => {
+                            // Some new node in inserted behind us.
+                            // Unmark and restart.
+                            let res = current_node.next.compare_and_set(
+                                next_ptr.with_tag(1),
+                                next_ptr,
+                                SeqCst,
+                            );
+                            if res.is_err() {
+                                // This might hit if we decide to make other threads help out on
+                                // deletion.
+                                panic!("couldn't untag ptr. WTF?");
+                            }
+                            continue 'outer;
+                        }
+                    }
+                } else {
+                    current_atomic_ptr = &current_node.next;
+                    current_ptr = current_node.next.load(SeqCst).with_tag(0);
+                    prev_hp.take().map(::std::mem::drop);
+                    prev_hp = Some(current_hp);
+
+                    if current_ptr.is_null() {
+                        // we've reached the end of the list, without finding our value.
+                        return None;
+                    }
+                }
+            }
+        }
+    }
 
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
-        let mut node_ptr = self.head.load(SeqCst);
-        let mut node;
-        while !node_ptr.is_null() {
-            node = unsafe { node_ptr.deref() };
-            if *node.data == *value {
-                return true;
+        'outer: loop {
+            let mut node_ptr = self.head.load(SeqCst);
+            let mut node_hp = node_ptr.hazard();
+            {
+                if self.head.load(SeqCst) != node_ptr {
+                    continue 'outer;
+                }
             }
-            node_ptr = node.next.load(SeqCst);
+            let mut prev_hp;
+            let mut node;
+            while !node_ptr.is_null() {
+                node = unsafe { node_ptr.deref() };
+                if *node.data == *value {
+                    return true;
+                }
+                prev_hp = node_hp;
+                node_ptr = node.next.load(SeqCst);
+                node_hp = node_ptr.hazard();
+                {
+                    if node.next.load(SeqCst) != node_ptr {
+                        // TODO: we actually only need to read the last node again.
+                        continue 'outer;
+                    }
+                }
+            }
+            return false
         }
-        false
     }
 }
 
 /// An iterator for `List`
 pub struct Iter<'a, T: 'a> {
     node: Ptr<'a, Node<T>>,
+    hp: HazardPtr<Node<T>>,
     _marker: ::std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO: this also needs to use HP!
-        if let Some(node) = unsafe { self.node.as_ref() } {
-            self.node = node.next.load(SeqCst);
-            Some(&node.data)
-        } else {
-            None
+        'outer: loop {
+            if let Some(node) = unsafe { self.node.as_ref() } {
+                let new_node = node.next.load(SeqCst);
+                let new_hp = new_node.hazard();
+                {
+                    if node.next.load(SeqCst) != new_node {
+                        continue 'outer;
+                    }
+                }
+                self.node = new_node;
+                self.hp = new_hp;
+                return Some(&node.data)
+            } else {
+                return None
+            }
         }
     }
 }
@@ -295,7 +419,7 @@ mod test {
         let list = List::new();
         const N: usize = 32;
         for i in 0..N {
-            assert!(!list.insert(i).is_null());
+            list.insert(i);
         }
         assert_eq!(list.iter().count(), N);
     }
@@ -305,7 +429,7 @@ mod test {
         let list = List::new();
         const N: usize = 32;
         for i in 0..N {
-            assert!(!list.insert(i).is_null());
+            list.insert(i);
         }
         for i in (0..N).rev() {
             let ret = list.remove_front();

@@ -28,6 +28,7 @@ pub struct ThreadEntry {
 
 impl ThreadEntry {
     fn new(id: usize) -> Self {
+        println!("making threadentry with id={}", id);
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
             let mut entry = Self {
@@ -81,8 +82,13 @@ pub fn marker() -> &'static mut ThreadEntry {
 
 fn remove_thread_local() {
     let marker = marker();
-    let ret = ENTRIES.remove(marker);
-    assert!(ret.is_some());
+    println!("Thread {} is removing its marker.", marker.thread_id);
+    let ret = ENTRIES.remove_with_node(marker);
+    if let Some(owned) = ret {
+        while HazardPtr::<()>::scan_addr(owned.data as usize) {}
+    } else {
+        panic!("Failed to remove own thread loacal thing!");
+    }
 }
 
 pub struct JoinHandle<T> {
@@ -213,7 +219,6 @@ fn free_from_queue() {
         {
             if HazardPtr::<()>::scan_addr(garbage.address()) {
                 // used
-                panic!("Since we spun inside, we should never get here?");
                 HAZARD_QUEUE.push(garbage);
             } else {
                 drop(garbage);

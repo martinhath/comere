@@ -1065,6 +1065,15 @@ impl<T> HazardPtr<T> {
     }
 }
 
+impl<T> Deref for HazardPtr<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*(self.data as *const T) }
+    }
+}
+
+
 impl<T> HazardPtr<T>
 where
     T: 'static,
