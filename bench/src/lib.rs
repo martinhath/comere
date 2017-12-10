@@ -436,12 +436,10 @@ where
         for _i in 0..self.n {
             // println!("[bench/src/lib.rs]: iteration {}", _i);
             (self.before)(&mut self.state);
-            // print!("b");
-            flush();
-            // println!("#### Sending {}", _i);
+            // print!("b"); flush();
+            /// println!("#### Sending {}", _i);
             for sender in &self.senders {
-                // print!("s");
-                flush();
+                // print!("s"); flush();
                 assert!(sender.send(ThreadSignal::Run(func_ptr.clone())).is_ok());
             }
             // TODO: this is not good: we risk waiting for a long time in `barrier.wait`
@@ -449,8 +447,7 @@ where
             self.barrier.wait();
             // println!("#### Receiving {}", _i);
             for recv in self.receivers.iter() {
-                // print!("r");
-                flush();
+                // print!("r"); flush();
                 match recv.recv() {
                     Ok(ThreadSignal::Done(_t)) => {
                         // OK

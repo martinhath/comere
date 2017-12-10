@@ -3,6 +3,8 @@ use super::atomic::{Owned, Atomic, Ptr};
 use std::mem::ManuallyDrop;
 use super::{Pin, pin};
 
+const STUCK_N: usize = 100_000;
+
 pub struct Node<T> {
     pub data: ManuallyDrop<T>,
     pub next: Atomic<Node<T>>,
@@ -34,7 +36,13 @@ impl<T> List<T> {
         let curr_ptr: Ptr<Node<T>> = Owned::new(Node::new(data)).into_ptr(_pin);
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
         let mut head = self.head.load(SeqCst, _pin);
+        assert_eq!(head.tag(), 0);
+        let mut c = 0;
         loop {
+            c += 1;
+            if c > STUCK_N {
+                println!("stuck in ebr::list::insert!");
+            }
             curr.next.store(head, SeqCst);
             let res = self.head.compare_and_set(head, curr_ptr, SeqCst, _pin);
             match res {
@@ -65,12 +73,21 @@ impl<T> List<T> {
     /// Removes and returns the first element of the list, if any.
     pub fn remove_front<'scope>(&self, pin: Pin<'scope>) -> Option<T> {
         let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst, pin);
+        let mut c = 0;
         loop {
+            c += 1;
+            if c > STUCK_N {
+                println!("stuck in ebr::list::remove_front!");
+            }
             if head_ptr.is_null() {
                 return None;
             }
             let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(SeqCst, pin).with_tag(0);
+            let next = head.next.load(SeqCst, pin);
+            if next.tag() != 0 {
+                head_ptr = self.head.load(SeqCst, pin);
+                continue;
+            }
             match self.head.compare_and_set(head_ptr, next, SeqCst, pin) {
                 Ok(()) => {
                     let data = unsafe {::std::ptr::read(&head.data)};
@@ -144,7 +161,11 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> Option<T> {
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
+        let mut outer_count = 0;
         'outer: loop {
+            if outer_count > STUCK_N {
+                println!("possibly stuck in hp::list::remove");
+            }
             let mut previous_node_ptr = &self.head;
             let mut current_ptr = self.head.load(SeqCst, _pin);
             if current_ptr.is_null() {
@@ -153,7 +174,14 @@ impl<T: ::std::cmp::PartialEq> List<T> {
             let mut current: &Node<T> = unsafe { current_ptr.deref() };
 
             loop {
-                let next_ptr = current.next.load(SeqCst, _pin).with_tag(0);
+                let next_ptr = current.next.load(SeqCst, _pin);
+                if next_ptr.tag() != 0 {
+                    // We are begin removed. All bets are off!
+                    if outer_count > STUCK_N {
+                        println!("Found a node that is marked. Restart!");
+                    }
+                    continue 'outer;
+                }
                 if *current.data == *value {
                     // Now we want to remove the current node from the list.  We first need to mark
                     // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
@@ -167,6 +195,9 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                         .is_err()
                     {
                         // Failed to mark the current node. Restart.
+                        if outer_count > STUCK_N {
+                            println!("Failed to mark the target node.");
+                        }
                         continue 'outer;
                     };
                     let res =
@@ -178,7 +209,6 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                             return Some(ManuallyDrop::into_inner(data));
                         }
                         Err(_) => {
-                            let pnp = previous_node_ptr.load(SeqCst, _pin);
                             // Some new node in inserted behind us. Unmark and restart.
                             let res = current.next.compare_and_set(
                                 next_ptr.with_tag(1),
@@ -188,6 +218,9 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                             );
                             if res.is_err() {
                                 panic!("coulnd't untag ptr. WTF?");
+                            }
+                            if outer_count > STUCK_N {
+                                println!("Tried to CAS around the target node, but couldn't");
                             }
                             continue 'outer;
                         }
@@ -276,31 +309,29 @@ impl<T: ::std::cmp::PartialEq> List<T> {
 
     /// Return `true` if the list contains the given value.
     pub fn contains<'scope>(&self, value: &T, _pin: Pin<'scope>) -> bool {
-        let previous_atomic: &Atomic<Node<T>> = &self.head;
-        let mut node_ptr = self.head.load(SeqCst, _pin);
-        let mut node;
+        let mut c = 0;
+        'outer: loop {
+            c += 1;
+            if c > STUCK_N {
+                println!("stuck in ebr::list::contains");
+            }
+            let previous_atomic: &Atomic<Node<T>> = &self.head;
+            let mut node_ptr = self.head.load(SeqCst, _pin);
+            let mut node;
 
-        use ::std::collections::HashSet;
-        let mut visited = HashSet::new();
-        let mut ptrs = Vec::new();
-        while !node_ptr.is_null() {
-            node = unsafe { node_ptr.deref() };
-            if *node.data == *value {
-                return true;
-            }
-            node_ptr = node.next.load(SeqCst, _pin);
-            let u = node_ptr.as_raw() as usize;
-            if visited.contains(&u) {
-                eprintln!("  {:x} has been seen before!", u);
-                for (i, p) in ptrs.iter().rev().take_while(|&&p| p != u).enumerate() {
-                    eprintln!("  {:3} {:x}", i, p);
+            while !node_ptr.is_null() {
+                node = unsafe { node_ptr.deref() };
+                if *node.data == *value {
+                    return true;
                 }
-                panic!("loop!");
+                node_ptr = node.next.load(SeqCst, _pin);
+                if node_ptr.tag() != 0 {
+                    // restart, as we're being (or has been) removed
+                    continue 'outer;
+                }
             }
-            visited.insert(u);
-            ptrs.push(u);
+            return false
         }
-        false
     }
 }
 

@@ -1,6 +1,8 @@
 use std::sync::atomic::Ordering::SeqCst;
 use std::mem::{drop, ManuallyDrop};
 
+const DEBUG: bool = false;
+
 use super::atomic::{Owned, Atomic, Ptr, HazardPtr};
 
 pub struct Node<T> {
@@ -91,34 +93,63 @@ where
 
     /// Removes and returns the first element of the list, if any.
     pub fn remove_front(&self) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst);
-        loop {
-            if head_ptr.is_null() {
-                return None;
+        let mut outer_count = 0;
+        'outer: loop {
+            let mut inner_count = 0;
+            outer_count += 1;
+            if outer_count > STUCK_N {
+                println!("possibly stuck in hp::list::remove_front (outer)");
             }
-            let head_hp = head_ptr.hazard();
-            {
-                if self.head.load(SeqCst) != head_ptr {
-                    drop(head_hp);
-                    return self.remove_front();
+            let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst);
+            loop {
+                inner_count += 1;
+                if inner_count > STUCK_N {
+                   println!("possibly stuck in hp::list::remove_front (inner)");
                 }
-            }
-            let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(SeqCst);
-            match self.head.compare_and_set(head_ptr, next, SeqCst) {
-                Ok(()) => unsafe {
-                    head_hp.wait();
-                    // Now the head is made unreachable from the queue, and no thread has marked
-                    // the pointer in the hazard list. Then we have exclusive access to it. Read
-                    // the data, and free the node.
-                    let data = ::std::ptr::read(&head.data);
-                    // Since we have made the node unreachable, and no thread has registered
-                    // it as hazardous, it is safe to free.
-                    head_hp.free();
-                    return Some(ManuallyDrop::into_inner(data));
+                if head_ptr.is_null() {
+                    return None;
                 }
-                Err(new_head) => {
-                    head_ptr = new_head;
+                let head_hp = head_ptr.hazard();
+                {
+                    if self.head.load(SeqCst) != head_ptr {
+                        continue 'outer;
+                    }
+                }
+                let head: &Node<T> = unsafe { head_ptr.deref() };
+                let next = head.next.load(SeqCst);
+                let next_hp = next.hazard();
+                {
+                    if head.next.load(SeqCst) != next {
+                        continue 'outer;
+                    }
+                }
+                // Mark this node as 'to be removed'. This is needed, since if we do not do this,
+                // we risk that this node, as well as the next node is removed from the list, which
+                // causes problems for other concurrent operations.
+                let tag_res = head.next.compare_and_set(next, next.with_tag(1), SeqCst);
+                if tag_res.is_err() {
+                    continue 'outer;
+                }
+                match self.head.compare_and_set(head_ptr, next, SeqCst) {
+                    Ok(()) => unsafe {
+                        // Now the head is made unreachable from the queue, and no thread has marked
+                        // the pointer in the hazard list. Then we have exclusive access to it. Read
+                        // the data, and free the node.
+                        let data = ::std::ptr::read(&head.data);
+                        // Since we have made the node unreachable, and no thread has registered
+                        // it as hazardous, it is safe to free.
+                        head_hp.free();
+                        return Some(ManuallyDrop::into_inner(data));
+                    }
+                    Err(new_head) => {
+                        // Some new node in inserted behind us. Unmark and restart.
+                        let _res = head.next.compare_and_set(
+                            next.with_tag(1),
+                            next,
+                            SeqCst,
+                        );
+                        head_ptr = new_head;
+                    }
                 }
             }
         }
@@ -144,6 +175,8 @@ where
     }
 }
 
+const STUCK_N: usize = 10_000;
+
 impl<T> List<T>
 where
     T: 'static + PartialEq + ::std::fmt::Debug,
@@ -159,33 +192,55 @@ where
     pub fn remove(&self, value: &T) -> Option<T> {
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
+        let mut outer_count = 0;
+        let ti = if DEBUG { super::marker().thread_id } else { 0 };
         'outer: loop {
+            outer_count += 1;
+            if outer_count > STUCK_N {
+                println!("{} possibly stuck in hp::list::remove (outer)", ti);
+            }
             let mut current_atomic_ptr = &self.head;
+            // NOTE: here we assume that we never tag the head pointer, which is probably correct?
             let mut current_ptr = current_atomic_ptr.load(SeqCst);
             if current_ptr.is_null() {
+                if DEBUG {
+                    println!("[{}] List is empty!", ti);
+                }
                 return None;
             }
             let mut current_node: &Node<T>;
             let mut prev_hp: Option<HazardPtr<::hp::list::Node<T>>> = None;
 
+            let mut inner_count = 0;
             loop {
+                inner_count += 1;
                 let current_hp = current_ptr.hazard();
                 // validate
                 {
                     if let Some(ref handle) = prev_hp {
                         if handle.next.load(SeqCst) != current_ptr {
                             drop(current_hp); // explicit drop here. Do we need it?
+                            if outer_count > STUCK_N {
+                                println!("{} couldn't verify current_hp (1) (inner_count={})", ti, inner_count);
+                            }
                             continue 'outer;
                         }
                     } else {
+                        // This is only the case the first iteration, when cap == head.
                         if current_atomic_ptr.load(SeqCst) != current_ptr {
                             drop(current_hp); // explicit drop here. Do we need it?
+                            if outer_count > STUCK_N {
+                                println!("{} couldn't verify current_hp (2)", ti);
+                            }
                             continue 'outer;
                         }
                     }
                 }
                 current_node = unsafe { current_ptr.deref() };
 
+                if DEBUG {
+                    println!("[{}] Looking for {:?}.\tAm seeing {:?}\tinner_count={}", ti, *value, *current_node.data, inner_count);
+                }
                 if *current_node.data == *value {
                     // Now we want to remove the current node from the list.  We first need to mark
                     // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
@@ -193,12 +248,16 @@ where
                     // and us swinging the `next` pointer of `previous` to the old `next` of the
                     // current node.
                     let next_ptr = current_node.next.load(SeqCst);
+                    // ??? TODO: HP validation here?
                     if current_node
                         .next
                         .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst)
                         .is_err()
                     {
                         // Failed to mark the current node. Restart.
+                            if outer_count > STUCK_N {
+                        println!("couldn't mark current node.");
+                            }
                         continue 'outer;
                     };
                     let res = current_atomic_ptr.compare_and_set(current_ptr, next_ptr, SeqCst);
@@ -207,6 +266,9 @@ where
                             // Now `current_node` is not reachable from the list.
                             let data = ::std::ptr::read(&current_node.data);
                             current_hp.free();
+                            if DEBUG {
+                                println!("[{}] suceess!!", ti);
+                            }
                             return Some(ManuallyDrop::into_inner(data));
                         }
                         Err(_) => {
@@ -222,24 +284,41 @@ where
                                 // deletion.
                                 panic!("couldn't untag ptr. WTF?");
                             }
+                            if outer_count > STUCK_N {
+                           println!("Tried to untag pointer. Success? {}", res.is_ok());
+                            }
                             continue 'outer;
                         }
                     }
                 } else {
                     current_atomic_ptr = &current_node.next;
-                    current_ptr = current_node.next.load(SeqCst).with_tag(0);
+                    current_ptr = current_node.next.load(SeqCst);
+                    if current_ptr.tag() != 0 {
+                        // Some other thread have deleted us! This means that the next node might
+                        // have already been free'd.
+                        if outer_count > STUCK_N {
+                            println!("[{}] want to skip this node, but it is marked! Danger!", ti);
+                        }
+                        continue 'outer;
+                    }
                     prev_hp.take().map(::std::mem::drop);
                     prev_hp = Some(current_hp);
 
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
+                        if DEBUG {
+                            println!("[{}] at end of list!!", ti);
+                        }
                         return None;
+                    }
+                    if outer_count > STUCK_N {
+                        println!("[{}] regular iter advance", ti);
                     }
                 }
             }
         }
     }
-    
+
     pub fn remove_with_node(&self, value: &T) -> Option<Owned<Node<T>>> {
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
@@ -341,6 +420,11 @@ where
                 }
                 prev_hp = node_hp;
                 node_ptr = node.next.load(SeqCst);
+                if node_ptr.tag() != 0 {
+                    // TODO: We could probably just take one step back, instead of restarting the
+                    // whole operation.
+                    continue 'outer;
+                }
                 node_hp = node_ptr.hazard();
                 {
                     if node.next.load(SeqCst) != node_ptr {

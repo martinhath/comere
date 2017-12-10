@@ -28,7 +28,6 @@ pub struct ThreadEntry {
 
 impl ThreadEntry {
     fn new(id: usize) -> Self {
-        println!("making threadentry with id={}", id);
         unsafe {
             // We get uninitialized memory, and initialize it with ptr::write.
             let mut entry = Self {
@@ -82,7 +81,6 @@ pub fn marker() -> &'static mut ThreadEntry {
 
 fn remove_thread_local() {
     let marker = marker();
-    println!("Thread {} is removing its marker.", marker.thread_id);
     let ret = ENTRIES.remove_with_node(marker);
     if let Some(owned) = ret {
         while HazardPtr::<()>::scan_addr(owned.data as usize) {}

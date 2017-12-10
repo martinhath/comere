@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+use std::sync::atomic::Ordering::{SeqCst};
 use super::atomic::{Owned, Atomic, Ptr};
 
 #[derive(Debug)]
@@ -35,10 +35,10 @@ impl<T> List<T> {
             }
         }
         let curr: &Node<T> = unsafe { curr_ptr.deref() };
-        let mut head = self.head.load(Relaxed);
+        let mut head = self.head.load(SeqCst);
         loop {
-            curr.next.store(head, Relaxed);
-            let res = self.head.compare_and_set(head, curr_ptr, Release);
+            curr.next.store(head, SeqCst);
+            let res = self.head.compare_and_set(head, curr_ptr, SeqCst);
             match res {
                 Ok(_) => {
                     return;
@@ -51,7 +51,7 @@ impl<T> List<T> {
     }
 
     pub fn is_empty(&self) -> bool {
-        let head = self.head.load(Relaxed);
+        let head = self.head.load(SeqCst);
         let ret = head.is_null();
         if !ret {
             let mut node = unsafe { head.deref() };
@@ -66,14 +66,14 @@ impl<T> List<T> {
 
     /// Removes and returns the first element of the list, if any.
     pub fn remove_front(&self) -> Option<T> {
-        let mut head_ptr: Ptr<Node<T>> = self.head.load(Relaxed);
+        let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst);
         loop {
             if head_ptr.is_null() {
                 return None;
             }
             let head: &Node<T> = unsafe { head_ptr.deref() };
-            let next = head.next.load(Relaxed);
-            match self.head.compare_and_set(head_ptr, next, Release) {
+            let next = head.next.load(SeqCst);
+            match self.head.compare_and_set(head_ptr, next, SeqCst) {
                 Ok(()) => {
                     return Some(unsafe {::std::ptr::read(&head.data)})
                 }
@@ -88,14 +88,14 @@ impl<T> List<T> {
 impl<T: PartialEq> List<T> {
     /// Return `true` if the list contains the given value.
     pub fn contains(&self, value: &T) -> bool {
-        let mut node_ptr = self.head.load(Relaxed);
+        let mut node_ptr = self.head.load(SeqCst);
         let mut node;
         while !node_ptr.is_null() {
             node = unsafe { node_ptr.deref() };
             if node.data == *value {
                 return true;
             }
-            node_ptr = node.next.load(Relaxed);
+            node_ptr = node.next.load(SeqCst);
         }
         false
     }

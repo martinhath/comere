@@ -965,6 +965,7 @@ use hp::{NUM_HP, ThreadEntry, marker, HazardError};
 
 impl<T> HazardPtr<T> {
     fn register(&self) -> Result<(), HazardError> {
+        assert!((self.data & 0x8) == 0);
         let entry: &mut ThreadEntry = marker();
         for i in 0..NUM_HP {
             let hp = entry.hazard_pointers[i].load(Ordering::SeqCst);
@@ -1030,6 +1031,7 @@ impl<T> HazardPtr<T> {
     }
 
     fn from_raw(ptr: usize) -> Self {
+        assert!(ptr & 0x7 == 0x0);
         let hp = Self {
             data: ptr,
             _marker: PhantomData,
@@ -1038,26 +1040,12 @@ impl<T> HazardPtr<T> {
         hp
     }
 
-    pub fn fake(ptr: usize) -> Self {
-        Self {
-            data: ptr,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn from_data(data: usize) -> Self {
-        Self {
-            data,
-            _marker: PhantomData,
-        }
-    }
-
     pub fn from_ptr(ptr: Ptr<T>) -> Self {
-        Self::from_raw(ptr.as_raw() as usize)
+        Self::from_raw(ptr.with_tag(0).as_raw() as usize)
     }
 
     pub fn from_owned(ptr: Owned<T>) -> Self {
-        Self::from_raw(ptr.into_ptr().as_raw() as usize)
+        Self::from_raw(ptr.with_tag(0).into_ptr().as_raw() as usize)
     }
 
     pub unsafe fn into_owned(self) -> Owned<T> {

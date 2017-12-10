@@ -1,11 +1,12 @@
 use bench;
 
-use std::thread;
 use super::*;
 
 use bench::{black_box, StdThread};
 
 use rand::Rng;
+
+const DEBUG: bool = false;
 
 pub mod hp {
 
@@ -120,17 +121,25 @@ pub mod hp {
             for i in 0..NUM_ELEMENTS_SMALLER / state.num_threads {
                 let n = (i * state.num_threads + ti) as u32;
                 let ret = state.list.remove(&n);
+                if ret.is_none() {
+                    println!("FUCK, dind't find {}", n);
+                }
                 assert!(ret.is_some());
             }
         }
 
         let mut b = bench::ThreadBencher::<State, hp::JoinHandle<()>>::new(state, num_threads);
         b.before(|state| {
+            assert!(state.list.is_empty());
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
-            for &i in &n {
+            for &i in n.iter().rev() {
                 state.list.insert(i);
+            }
+            if DEBUG {
+                println!("###################### REMOVE START");
+                println!("{:?}", n);
             }
         });
 
@@ -164,39 +173,57 @@ pub mod hp {
         }
 
         fn real(state: &State) {
+            const DEBUG: bool = false;
             let mut rng = rand::thread_rng();
             let ti = THREAD_ID.with(|ti| *ti.borrow());
             for i in 0..NUM_ELEMENTS_SMALLER {
-                // println!("real {} {}", i, ti);
+                if DEBUG {
+                    // println!("real {} {}", i, ti);
+                }
                 use super::Operation::*;
-                match random_op(&mut rng) {
+                let op = random_op(&mut rng);
+                // println!("[{}] {:?}", ti, op);
+                match op {
                     Insert(n) => {
-                        // println!("{} insert", ti);
+                        if DEBUG {
+                            // println!("{} insert", ti);
+                        }
                         let r = state.list.insert(n);
                         black_box(r);
                     }
                     Search(n) => {
-                        // println!("{} search", ti);
+                        if DEBUG {
+                            // println!("{} search", ti);
+                        }
                         let r = state.list.contains(&n);
                         black_box(r);
                     }
                     Remove(n) => {
-                        // println!("{} remove", ti);
+                        if DEBUG {
+                            // println!("{} remove", ti);
+                        }
                         let r = state.list.remove(&n);
                         black_box(r);
                     }
                     PopFront => {
-                        // println!("{} pop_front", ti);
+                        if DEBUG {
+                            // println!("{} pop_front", ti);
+                        }
                         let r = state.list.remove_front();
+                        // let r = state.list.remove_front();
                         black_box(r);
                     }
                 }
-                // println!("{} ok", ti);
+                // println!("[{}] done", ti);
+                if DEBUG {
+                    // println!("{} ok", ti);
+                }
             }
         }
 
         let mut b = bench::ThreadBencher::<State, hp::JoinHandle<()>>::new(state, num_threads);
         b.before(|state| {
+            while let Some(_) = state.list.remove_front() {}
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
@@ -344,9 +371,11 @@ pub mod ebr {
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
+            println!("# ebr::list_remove insert start {}", THREAD_ID.with(|ti| *ti.borrow()));
             ebr::pin(|pin| for &i in &n {
                 state.list.insert(i, pin);
             });
+            println!("# ebr::list_remove insert end {}", THREAD_ID.with(|ti| *ti.borrow()));
         });
 
         THREAD_COUNTER.store(0, Ordering::SeqCst);
@@ -413,6 +442,7 @@ pub mod ebr {
 
         let mut b = bench::ThreadBencher::<State, StdThread<()>>::new(state, num_threads);
         b.before(|state| {
+            ebr::pin(|pin| while let Some(_) = state.list.remove_front(pin) {});
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
@@ -604,22 +634,22 @@ pub mod nothing {
         b.into_stats(format!("nothing::queue::transfer::{}", num_threads))
     }
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::cell::RefCell;
+    lazy_static! {
+        static ref THREAD_COUNTER: AtomicUsize = { AtomicUsize::new(0) };
+    }
+
+    thread_local! {
+        static THREAD_ID: RefCell<usize> = {
+            RefCell::new(THREAD_COUNTER.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
     pub fn list_remove(num_threads: usize) -> bench::BenchStats {
         struct State {
             list: List<u32>,
             num_threads: usize,
-        }
-
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::cell::RefCell;
-        lazy_static! {
-            static ref THREAD_COUNTER: AtomicUsize = { AtomicUsize::new(0) };
-        }
-
-        thread_local! {
-            static THREAD_ID: RefCell<usize> = {
-                RefCell::new(THREAD_COUNTER.fetch_add(1, Ordering::SeqCst))
-            }
         }
 
         let state = State {
@@ -660,32 +690,39 @@ pub mod nothing {
         let state = State { list: List::new() };
 
         fn real(state: &State) {
+            let ti = THREAD_ID.with(|t| *t.borrow());
             let mut rng = rand::thread_rng();
             for _ in 0..NUM_ELEMENTS_SMALLER {
                 use super::Operation::*;
                 match random_op(&mut rng) {
                     Insert(n) => {
+                        // println!(" t{} insert", ti);
                         let r = state.list.insert(n, None);
                         black_box(r);
                     }
                     Search(n) => {
+                        // println!(" t{} contains", ti);
                         let r = state.list.contains(&n);
                         black_box(r);
                     }
                     Remove(n) => {
+                        // println!(" t{} remove", ti);
                         let r = state.list.remove(&n);
                         black_box(r);
                     }
                     PopFront => {
+                        // println!(" t{} remove_front", ti);
                         let r = state.list.remove_front();
                         black_box(r);
                     }
                 }
+                // println!(" t{} ok", ti);
             }
         }
 
         let mut b = bench::ThreadBencher::<State, StdThread<()>>::new(state, num_threads);
         b.before(|state| {
+            while let Some(_) = state.list.remove_front() {}
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
