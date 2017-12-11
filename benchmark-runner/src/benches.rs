@@ -111,13 +111,17 @@ pub mod hp {
             }
         }
 
+        fn ti() -> usize {
+            THREAD_ID.with(|t| *t.borrow())
+        }
+
         let state = State {
             list: List::new(),
             num_threads,
         };
 
         fn remove(state: &State) {
-            let ti = THREAD_ID.with(|t| *t.borrow());
+            let ti = ti();
             for i in 0..NUM_ELEMENTS_SMALLER / state.num_threads {
                 let n = (i * state.num_threads + ti) as u32;
                 let ret = state.list.remove(&n);
@@ -152,71 +156,34 @@ pub mod hp {
     pub fn list_real(num_threads: usize) -> bench::BenchStats {
         struct State {
             list: List<u32>,
-            num_threads: usize,
         }
 
         let state = State {
             list: List::new(),
-            num_threads,
         };
 
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::cell::RefCell;
-        lazy_static! {
-            static ref THREAD_COUNTER: AtomicUsize = { AtomicUsize::new(0) };
-        }
-
-        thread_local! {
-            static THREAD_ID: RefCell<usize> = {
-                RefCell::new(THREAD_COUNTER.fetch_add(1, Ordering::SeqCst))
-            }
-        }
-
         fn real(state: &State) {
-            const DEBUG: bool = false;
             let mut rng = rand::thread_rng();
-            let ti = THREAD_ID.with(|ti| *ti.borrow());
-            for i in 0..NUM_ELEMENTS_SMALLER {
-                if DEBUG {
-                    // println!("real {} {}", i, ti);
-                }
+            for _i in 0..NUM_ELEMENTS_SMALLER {
                 use super::Operation::*;
                 let op = random_op(&mut rng);
-                // println!("[{}] {:?}", ti, op);
                 match op {
                     Insert(n) => {
-                        if DEBUG {
-                            // println!("{} insert", ti);
-                        }
                         let r = state.list.insert(n);
                         black_box(r);
                     }
                     Search(n) => {
-                        if DEBUG {
-                            // println!("{} search", ti);
-                        }
                         let r = state.list.contains(&n);
                         black_box(r);
                     }
                     Remove(n) => {
-                        if DEBUG {
-                            // println!("{} remove", ti);
-                        }
                         let r = state.list.remove(&n);
                         black_box(r);
                     }
                     PopFront => {
-                        if DEBUG {
-                            // println!("{} pop_front", ti);
-                        }
                         let r = state.list.remove_front();
-                        // let r = state.list.remove_front();
                         black_box(r);
                     }
-                }
-                // println!("[{}] done", ti);
-                if DEBUG {
-                    // println!("{} ok", ti);
                 }
             }
         }
@@ -232,12 +199,8 @@ pub mod hp {
             }
         });
 
-        // println!("before thread_bench");
         b.thread_bench(real);
-        // println!("before into_stats");
-        let s = b.into_stats(format!("nothing::list::remove::{}", num_threads));
-        // println!("End of bench function");
-        s
+        b.into_stats(format!("{}::list::real::{}", NAME, num_threads))
     }
 
     pub fn nop(num_threads: usize) -> bench::BenchStats {
@@ -352,17 +315,28 @@ pub mod ebr {
             }
         }
 
+        fn ti() -> usize {
+            THREAD_ID.with(|t| *t.borrow())
+        }
+
         let state = State {
             list: List::new(),
             num_threads,
         };
 
         fn remove(state: &State) {
-            let ti = THREAD_ID.with(|t| *t.borrow());
+            let ti = ti();
             for i in 0..NUM_ELEMENTS_SMALLER / state.num_threads {
                 let n = (i * state.num_threads + ti) as u32;
                 let ret = ebr::pin(|pin| state.list.remove(&n, pin));
-                assert!(ret.is_some());
+                if ret.is_none() {
+                    panic!(
+                        "{} should be in the list!, as 0 <= {} <= {}",
+                        n,
+                        n,
+                        NUM_ELEMENTS_SMALLER as u32
+                    );
+                }
             }
         }
 
@@ -371,11 +345,9 @@ pub mod ebr {
             let mut rng = rand::thread_rng();
             let mut n: Vec<u32> = (0..NUM_ELEMENTS_SMALLER as u32).collect();
             rng.shuffle(&mut n);
-            println!("# ebr::list_remove insert start {}", THREAD_ID.with(|ti| *ti.borrow()));
             ebr::pin(|pin| for &i in &n {
                 state.list.insert(i, pin);
             });
-            println!("# ebr::list_remove insert end {}", THREAD_ID.with(|ti| *ti.borrow()));
         });
 
         THREAD_COUNTER.store(0, Ordering::SeqCst);
@@ -387,56 +359,35 @@ pub mod ebr {
     pub fn list_real(num_threads: usize) -> bench::BenchStats {
         struct State {
             list: List<u32>,
-            num_threads: usize,
         }
 
         let state = State {
             list: List::new(),
-            num_threads,
         };
 
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::cell::RefCell;
-        lazy_static! {
-            static ref THREAD_COUNTER: AtomicUsize = { AtomicUsize::new(0) };
-        }
-
-        thread_local! {
-            static THREAD_ID: RefCell<usize> = {
-                RefCell::new(THREAD_COUNTER.fetch_add(1, Ordering::SeqCst))
-            }
-        }
-
         fn real(state: &State) {
-            let ti = THREAD_ID.with(|ti| *ti.borrow());
             let mut rng = rand::thread_rng();
-            for i in 0..NUM_ELEMENTS_SMALLER {
+            for _i in 0..NUM_ELEMENTS_SMALLER {
                 use super::Operation::*;
                 let op = random_op(&mut rng);
-                // println!("{} {:?}", ti, op);
                 ebr::pin(|pin| match op {
                     Insert(n) => {
-                        // println!("insert");
                         let r = state.list.insert(n, pin);
                         black_box(r);
                     }
                     Search(n) => {
-                        // println!("search");
                         let r = state.list.contains(&n, pin);
                         black_box(r);
                     }
                     Remove(n) => {
-                        // println!("remove");
                         let r = state.list.remove(&n, pin);
                         black_box(r);
                     }
                     PopFront => {
-                        // println!("pop_front");
                         let r = state.list.remove_front(pin);
                         black_box(r);
                     }
                 });
-                // println!("{} OK", ti);
             }
         }
 
@@ -452,7 +403,7 @@ pub mod ebr {
         });
 
         b.thread_bench(real);
-        b.into_stats(format!("nothing::list::remove::{}", num_threads))
+        b.into_stats(format!("ebr::list::real::{}", num_threads))
     }
 
     pub fn nop(num_threads: usize) -> bench::BenchStats {
@@ -662,7 +613,7 @@ pub mod nothing {
             for i in 0..NUM_ELEMENTS_SMALLER / state.num_threads {
                 let n = (i * state.num_threads + ti) as u32;
                 let ret = state.list.remove(&n);
-                assert!(ret);
+                assert!(ret.is_some());
             }
         }
 
@@ -690,7 +641,6 @@ pub mod nothing {
         let state = State { list: List::new() };
 
         fn real(state: &State) {
-            let ti = THREAD_ID.with(|t| *t.borrow());
             let mut rng = rand::thread_rng();
             for _ in 0..NUM_ELEMENTS_SMALLER {
                 use super::Operation::*;
@@ -732,7 +682,7 @@ pub mod nothing {
         });
 
         b.thread_bench(real);
-        b.into_stats(format!("nothing::list::remove::{}", num_threads))
+        b.into_stats(format!("nothing::list::real::{}", num_threads))
     }
 
     pub fn nop(num_threads: usize) -> bench::BenchStats {

@@ -41,7 +41,7 @@ impl<T> List<T> {
         loop {
             c += 1;
             if c > STUCK_N {
-                println!("stuck in ebr::list::insert!");
+                println!("stuck in ebr::list::insert! c={}", c);
             }
             curr.next.store(head, SeqCst);
             let res = self.head.compare_and_set(head, curr_ptr, SeqCst, _pin);
@@ -73,12 +73,7 @@ impl<T> List<T> {
     /// Removes and returns the first element of the list, if any.
     pub fn remove_front<'scope>(&self, pin: Pin<'scope>) -> Option<T> {
         let mut head_ptr: Ptr<Node<T>> = self.head.load(SeqCst, pin);
-        let mut c = 0;
-        loop {
-            c += 1;
-            if c > STUCK_N {
-                println!("stuck in ebr::list::remove_front!");
-            }
+        'outer: loop {
             if head_ptr.is_null() {
                 return None;
             }
@@ -86,7 +81,11 @@ impl<T> List<T> {
             let next = head.next.load(SeqCst, pin);
             if next.tag() != 0 {
                 head_ptr = self.head.load(SeqCst, pin);
-                continue;
+                continue 'outer;
+            }
+            let tag_res = head.next.compare_and_set(next, next.with_tag(1), SeqCst, pin);
+            if tag_res.is_err() {
+                continue 'outer;
             }
             match self.head.compare_and_set(head_ptr, next, SeqCst, pin) {
                 Ok(()) => {
@@ -96,6 +95,12 @@ impl<T> List<T> {
                     return Some(ManuallyDrop::into_inner(data))
                 }
                 Err(new_head) => {
+                    let _res = head.next.compare_and_set(
+                        next.with_tag(1),
+                        next,
+                        SeqCst,
+                        pin
+                    );
                     head_ptr = new_head;
                 }
             }
@@ -158,81 +163,94 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     /// Note that this method causes the list to not be lock-free, since
     /// threads wanting to insert a node after this or remove the next node
     /// will be stuck forever if a thread tags the current node and then dies.
-    pub fn remove<'scope>(&self, value: &T, _pin: Pin<'scope>) -> Option<T> {
+    pub fn remove<'scope>(&self, value: &T, pin: Pin<'scope>) -> Option<T> {
         // Rust does not have tail-call optimization guarantees, so we have to use a loop here, in
         // order not to blow the stack.
         let mut outer_count = 0;
+        let mut last_continue = 0;
         'outer: loop {
+            outer_count += 1;
             if outer_count > STUCK_N {
-                println!("possibly stuck in hp::list::remove");
+                println!("possibly stuck in ebr::list::remove (outer) (last_continue={})", last_continue);
             }
-            let mut previous_node_ptr = &self.head;
-            let mut current_ptr = self.head.load(SeqCst, _pin);
+            let mut current_atomic_ptr = &self.head;
+            // NOTE: here we assume that we never tag the head pointer, which is probably correct?
+            let mut current_ptr = current_atomic_ptr.load(SeqCst, pin);
             if current_ptr.is_null() {
                 return None;
             }
-            let mut current: &Node<T> = unsafe { current_ptr.deref() };
+            let mut current_node: &Node<T>;
 
+            let mut inner_count = 0;
             loop {
-                let next_ptr = current.next.load(SeqCst, _pin);
-                if next_ptr.tag() != 0 {
-                    // We are begin removed. All bets are off!
-                    if outer_count > STUCK_N {
-                        println!("Found a node that is marked. Restart!");
-                    }
-                    continue 'outer;
-                }
-                if *current.data == *value {
+                inner_count += 1;
+                current_node = unsafe { current_ptr.deref() };
+
+                if *current_node.data == *value {
                     // Now we want to remove the current node from the list.  We first need to mark
                     // this node as 'to-be-deleted', by tagging its next pointer. When doing this,
                     // we avoid that other threads are inserting something after the current node,
                     // and us swinging the `next` pointer of `previous` to the old `next` of the
                     // current node.
-                    let next_ptr = current.next.load(SeqCst, _pin);
-                    if current
+                    let next_ptr = current_node.next.load(SeqCst, pin).with_tag(0);
+                    if current_node
                         .next
-                        .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst, _pin)
+                        .compare_and_set(next_ptr, next_ptr.with_tag(1), SeqCst, pin)
                         .is_err()
                     {
                         // Failed to mark the current node. Restart.
-                        if outer_count > STUCK_N {
-                            println!("Failed to mark the target node.");
-                        }
+                            if outer_count > STUCK_N {
+                        println!("couldn't mark current node.");
+                            }
+                        last_continue = 1;
                         continue 'outer;
                     };
-                    let res =
-                        previous_node_ptr.compare_and_set(current_ptr, next_ptr, SeqCst, _pin);
+                    let res = current_atomic_ptr.compare_and_set(current_ptr.with_tag(0), next_ptr, SeqCst, pin);
                     match res {
                         Ok(_) => unsafe {
-                            let data = ::std::ptr::read(&current.data);
-                            _pin.add_garbage(current_ptr.into_owned());
+                            // Now `current_node` is not reachable from the list.
+                            let data = ::std::ptr::read(&current_node.data);
+                            pin.add_garbage(current_ptr.into_owned());
                             return Some(ManuallyDrop::into_inner(data));
                         }
                         Err(_) => {
-                            // Some new node in inserted behind us. Unmark and restart.
-                            let res = current.next.compare_and_set(
+                            // Some new node in inserted behind us.
+                            // Unmark and restart.
+                            let res = current_node.next.compare_and_set(
                                 next_ptr.with_tag(1),
                                 next_ptr,
                                 SeqCst,
-                                _pin,
+                                pin
                             );
                             if res.is_err() {
-                                panic!("coulnd't untag ptr. WTF?");
+                                // This might hit if we decide to make other threads help out on
+                                // deletion.
+                                // panic!("couldn't untag ptr. WTF?");
                             }
                             if outer_count > STUCK_N {
-                                println!("Tried to CAS around the target node, but couldn't");
+                           println!("Tried to untag pointer. Success? {}", res.is_ok());
                             }
+                        last_continue = 2;
                             continue 'outer;
                         }
                     }
                 } else {
-                    previous_node_ptr = &current.next;
-                    current_ptr = next_ptr;
+                    current_atomic_ptr = &current_node.next;
+                    current_ptr = current_node.next.load(SeqCst, pin);
+                    if current_ptr.tag() != 0 {
+                        // Some other thread have deleted us! This means that the next node might
+                        // have already been free'd.
+                        if outer_count > STUCK_N {
+                            println!("want to skip this node, but it is marked! Danger!");
+                        }
+                        last_continue = 3;
+                        continue 'outer;
+                    }
+
                     if current_ptr.is_null() {
                         // we've reached the end of the list, without finding our value.
                         return None;
                     }
-                    current = unsafe { current_ptr.deref() };
                 }
             }
         }
@@ -310,16 +328,19 @@ impl<T: ::std::cmp::PartialEq> List<T> {
     /// Return `true` if the list contains the given value.
     pub fn contains<'scope>(&self, value: &T, _pin: Pin<'scope>) -> bool {
         let mut c = 0;
+        let mut last_iter_before_stuck = 0;
         'outer: loop {
             c += 1;
             if c > STUCK_N {
-                println!("stuck in ebr::list::contains");
+                println!("stuck in ebr::list::contains c={} ({})", c, last_iter_before_stuck);
             }
             let previous_atomic: &Atomic<Node<T>> = &self.head;
             let mut node_ptr = self.head.load(SeqCst, _pin);
             let mut node;
 
+            let mut inner_count = 0;
             while !node_ptr.is_null() {
+                inner_count += 1;
                 node = unsafe { node_ptr.deref() };
                 if *node.data == *value {
                     return true;
@@ -327,6 +348,7 @@ impl<T: ::std::cmp::PartialEq> List<T> {
                 node_ptr = node.next.load(SeqCst, _pin);
                 if node_ptr.tag() != 0 {
                     // restart, as we're being (or has been) removed
+                    last_iter_before_stuck = inner_count;
                     continue 'outer;
                 }
             }

@@ -383,35 +383,23 @@ where
                 Sp::spawn(move || {
                     let recv = their_recv;
                     let send = their_send;
-                    let mut count = 0;
                     loop {
-                        // println!("thread {} recving signal #{}", _thread_id, count);
                         let signal = match recv.recv() {
                             Ok(ThreadSignal::Run(ref mut f)) => {
-                                // println!("thread {} waiting for barrier", _thread_id);
                                 barrier.wait();
                                 let t0 = time::precise_time_ns();
-                                // println!("thread {} calling", _thread_id);
                                 f.call();
                                 let t1 = time::precise_time_ns();
                                 ThreadSignal::Done(t1 - t0)
                             }
                             Ok(ThreadSignal::End) => {
-                                // println!("thread {} Got END", _thread_id);
                                 break;
                             }
                             Ok(_) => unreachable!(),
                             Err(e) => panic!("{:?}", e),
                         };
-                        // println!(
-                        //     "thread {} got signal, done matching. Sending #{}",
-                        //     _thread_id,
-                        //     count
-                        // );
                         assert!(send.send(signal).is_ok());
-                        count += 1;
                     }
-                    // println!("thread is dying: {}", _thread_id);
                     Default::default()
                 })
             })
@@ -434,20 +422,14 @@ where
     pub fn thread_bench(&mut self, f: fn(&St)) {
         let func_ptr = FunctionPtr::new(f, &self.state);
         for _i in 0..self.n {
-            // println!("[bench/src/lib.rs]: iteration {}", _i);
             (self.before)(&mut self.state);
-            // print!("b"); flush();
-            /// println!("#### Sending {}", _i);
             for sender in &self.senders {
-                // print!("s"); flush();
                 assert!(sender.send(ThreadSignal::Run(func_ptr.clone())).is_ok());
             }
             // TODO: this is not good: we risk waiting for a long time in `barrier.wait`
             let t0 = time::precise_time_ns();
             self.barrier.wait();
-            // println!("#### Receiving {}", _i);
             for recv in self.receivers.iter() {
-                // print!("r"); flush();
                 match recv.recv() {
                     Ok(ThreadSignal::Done(_t)) => {
                         // OK
@@ -455,15 +437,12 @@ where
                     _ => panic!("Thread didn't return correctly"),
                 }
             }
-            // println!();
             let t1 = time::precise_time_ns();
             self.samples.push(t1 - t0);
         }
-        // println!("main sending END");
         for sender in &self.senders {
             assert!(sender.send(ThreadSignal::End).is_ok());
         }
-        // println!("ends are sent");
         (self.after)(&mut self.state);
     }
 
@@ -477,7 +456,6 @@ where
 
     pub fn into_stats(self, name: String) -> BenchStats {
         self.threads.into_iter().map(Spawner::join).count();
-        // println!("ThreadBencher is dropped soon");
         BenchStats {
             samples: self.samples,
             ident: BenchIdentifier::from_str(&name).unwrap(),
@@ -490,6 +468,8 @@ fn flush() {
     let _ = ::std::io::stdout().flush();
 }
 
+
+#[cfg(test)]
 mod test {
     use super::*;
 
