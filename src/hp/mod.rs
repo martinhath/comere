@@ -206,23 +206,33 @@ where
 
 #[cfg(not(feature = "hp-wait"))]
 fn free_from_queue() {
-    const N: usize = 3;
-    for _ in 0..N {
-        if let Some(garbage) = HAZARD_QUEUE.pop_hp_fn(|h| {
-            h.spin();
-            unsafe {
-                h.into_owned();
-            }
-        })
-        {
-            if HazardPtr::<()>::scan_addr(garbage.address()) {
-                // used
-                HAZARD_QUEUE.push(garbage);
+    const N: usize = 32;
+    thread_local! {
+        static COUNTER: RefCell<usize> = { RefCell::new(0) }
+    }
+    let c = COUNTER.with(|c| {
+        let c = &mut *c.borrow_mut();
+        *c += 1;
+        *c
+    });
+    if c % N == 0 {
+        for _ in 0..N {
+            if let Some(garbage) = HAZARD_QUEUE.pop_hp_fn(|h| {
+                h.spin();
+                unsafe {
+                    h.into_owned();
+                }
+            })
+            {
+                if HazardPtr::<()>::scan_addr(garbage.address()) {
+                    // used
+                    HAZARD_QUEUE.push(garbage);
+                } else {
+                    drop(garbage);
+                }
             } else {
-                drop(garbage);
+                return;
             }
-        } else {
-            return;
         }
     }
 }
